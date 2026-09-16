@@ -14,6 +14,7 @@ loadEnv();
 const db = require("./db");
 const payments = require("./payments");
 const notify = require("./notify");
+const clover = require("./clover");
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -157,6 +158,67 @@ async function sendCateringConfirmation(request) {
   }
 }
 
+// Pushes a paid order into Clover so kitchen staff see it on the
+// register/KDS. Never throws — a Clover hiccup should never block a
+// customer's confirmation. Returns true/false so the caller can record
+// sync status on the order for the kitchen board to show.
+async function pushOrderToClover(order) {
+  if (!clover.isCloverConfigured()) return false;
+  try {
+    const cartLineItems = order.items
+      .map((i) => {
+        const m = MENU.find((x) => x.id === i.id);
+        return m ? { name: m.name, qty: i.qty, priceCents: Math.round(m.price * 100) } : null;
+      })
+      .filter(Boolean);
+    const lineItems = clover.expandLineItems(cartLineItems);
+    // Tax as its own line so Clover's total matches what was actually charged.
+    if (order.tax > 0) lineItems.push({ name: "Tax", priceCents: Math.round(order.tax * 100) });
+
+    const note = [
+      `Order ${order.ref}`,
+      order.customer.name,
+      order.customer.phone,
+      order.fulfillment === "pickup" ? "Pickup ASAP" : "Scheduled pickup",
+      order.notes || "",
+    ].filter(Boolean).join(" · ");
+
+    await clover.pushOrder({ lineItems, note });
+    return true;
+  } catch (e) {
+    console.error(`Clover push failed for order ${order.ref}:`, e.message);
+    return false;
+  }
+}
+
+// Same idea for a catering booking — one summary line item for the whole
+// booking (not one per guest) since a caterer needs "prep 40 Office
+// Lunch," not 40 duplicate ticket lines.
+async function pushCateringToClover(booking) {
+  if (!clover.isCloverConfigured()) return false;
+  try {
+    const lineItems = [{
+      name: `${booking.package.name} catering — ${booking.headcount} guests`,
+      priceCents: Math.round(booking.subtotal * 100),
+    }];
+    if (booking.tax > 0) lineItems.push({ name: "Tax", priceCents: Math.round(booking.tax * 100) });
+
+    const note = [
+      `Catering ${booking.ref}`,
+      booking.contact.name,
+      booking.contact.phone,
+      `${booking.eventDate} at ${booking.eventAddress}`,
+      booking.notes || "",
+    ].filter(Boolean).join(" · ");
+
+    await clover.pushOrder({ lineItems, note });
+    return true;
+  } catch (e) {
+    console.error(`Clover push failed for catering ${booking.ref}:`, e.message);
+    return false;
+  }
+}
+
 async function sendLocationAlert(subscriber, location) {
   const when = `${location.date}${location.startTime ? ` ${location.startTime}` : ""}${location.endTime ? `–${location.endTime}` : ""}`;
   const text = `Cleveland Smash Burgers pop-up alert: we'll be at ${location.name}, ${location.address} on ${when}.${location.notes ? ` ${location.notes}` : ""}`;
@@ -187,6 +249,12 @@ const server = http.createServer(async (req, res) => {
   // ---- Menu ----
   if (url.pathname === "/api/menu" && req.method === "GET") {
     return sendJSON(res, 200, { items: MENU });
+  }
+
+  // ---- Clover: status (kitchen — lets the board know whether to show sync info) ----
+  if (url.pathname === "/api/clover/status" && req.method === "GET") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+    return sendJSON(res, 200, { enabled: clover.isCloverConfigured() });
   }
 
   // ---- Kitchen auth ----
@@ -237,7 +305,9 @@ const server = http.createServer(async (req, res) => {
 
       if (!stripeOn) {
         await sendOrderConfirmations(order);
-        return sendJSON(res, 201, { order });
+        const synced = await pushOrderToClover(order);
+        const finalOrder = await db.updateOrder(order.ref, { cloverSynced: synced });
+        return sendJSON(res, 201, { order: finalOrder || order });
       }
 
       try {
@@ -245,10 +315,19 @@ const server = http.createServer(async (req, res) => {
           .map((i) => {
             const menuItem = MENU.find((m) => m.id === i.id);
             if (!menuItem) return null;
-            return { name: menuItem.name, unitAmountCents: Math.round(menuItem.price * 100), quantity: i.qty };
+            return {
+              name: menuItem.name,
+              unitAmountCents: Math.round(menuItem.price * 100),
+              quantity: i.qty,
+              taxCode: payments.FOOD_TAX_CODE,
+            };
           })
           .filter(Boolean);
-        lineItems.push({ name: "Tax", unitAmountCents: Math.round(order.tax * 100), quantity: 1 });
+        // No manual "Tax" line here — automatic_tax on the Checkout
+        // Session (see payments.js) calculates and adds real tax itself.
+        // The order.tax/order.total set above are just a pre-checkout
+        // estimate; verify-payment overwrites them with Stripe's actual
+        // figures once the customer pays.
 
         const origin = requestOrigin(req);
         const session = await payments.createCheckoutSession({
@@ -269,7 +348,9 @@ const server = http.createServer(async (req, res) => {
           paymentNote: "Stripe unavailable — order accepted without online payment.",
         });
         await sendOrderConfirmations(finalOrder);
-        return sendJSON(res, 201, { order: finalOrder });
+        const synced = await pushOrderToClover(finalOrder);
+        const withSync = await db.updateOrder(order.ref, { cloverSynced: synced });
+        return sendJSON(res, 201, { order: withSync || finalOrder });
       }
     } catch (e) {
       return sendJSON(res, 400, { error: "Couldn't read that order. " + e.message });
@@ -288,9 +369,21 @@ const server = http.createServer(async (req, res) => {
     try {
       const session = await payments.retrieveCheckoutSession(sessionId);
       if (session.payment_status === "paid") {
-        const updated = await db.updateOrder(ref, { status: "received", paid: true, stripePaymentStatus: session.payment_status });
+        // Overwrite our pre-checkout estimate with what Stripe actually
+        // calculated and charged (real tax, once you have a jurisdiction
+        // registered — see payments.js).
+        const updated = await db.updateOrder(ref, {
+          status: "received",
+          paid: true,
+          stripePaymentStatus: session.payment_status,
+          subtotal: Math.round((session.amount_subtotal || 0)) / 100,
+          tax: Math.round((session.total_details?.amount_tax || 0)) / 100,
+          total: Math.round((session.amount_total || 0)) / 100,
+        });
         await sendOrderConfirmations(updated);
-        return sendJSON(res, 200, { order: updated });
+        const synced = await pushOrderToClover(updated);
+        const withSync = await db.updateOrder(ref, { cloverSynced: synced });
+        return sendJSON(res, 200, { order: withSync || updated });
       }
       return sendJSON(res, 200, { order, paymentPending: true });
     } catch (e) {
@@ -318,6 +411,17 @@ const server = http.createServer(async (req, res) => {
       if (!updated) return sendJSON(res, 404, { error: "Order not found." });
       return sendJSON(res, 200, { order: updated });
     }
+  }
+
+  // ---- Orders: retry Clover sync (kitchen) ----
+  if (parts[0] === "api" && parts[1] === "orders" && parts.length === 4 && parts[3] === "resync-clover" && req.method === "POST") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+    const ref = decodeURIComponent(parts[2]);
+    const order = await db.getOrder(ref);
+    if (!order) return sendJSON(res, 404, { error: "Order not found." });
+    const synced = await pushOrderToClover(order);
+    const updated = await db.updateOrder(ref, { cloverSynced: synced });
+    return sendJSON(res, synced ? 200 : 502, { order: updated, synced });
   }
 
   // ---- Orders: list (kitchen) ----
@@ -350,13 +454,16 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 400, { error: "Name, email, and phone are required." });
       }
 
-      const total = Math.round(pkg.pricePerPerson * count * 100) / 100;
+      const subtotal = Math.round(pkg.pricePerPerson * count * 100) / 100;
+      const total = subtotal; // pre-checkout estimate; verify-payment overwrites with Stripe's real total+tax
       const stripeOn = payments.isStripeConfigured();
 
       const booking = {
         ref: makeRefCode("CATER"),
         package: { id: pkg.id, name: pkg.name, pricePerPerson: pkg.pricePerPerson },
         headcount: count,
+        subtotal,
+        tax: 0,
         total,
         eventDate,
         eventType: eventType || "not specified",
@@ -373,7 +480,9 @@ const server = http.createServer(async (req, res) => {
 
       if (!stripeOn) {
         await sendCateringConfirmation(booking);
-        return sendJSON(res, 201, { request: booking });
+        const synced = await pushCateringToClover(booking);
+        const finalBooking = await db.updateCateringRequest(booking.ref, { cloverSynced: synced });
+        return sendJSON(res, 201, { request: finalBooking || booking });
       }
 
       try {
@@ -383,6 +492,7 @@ const server = http.createServer(async (req, res) => {
             name: `${pkg.name} catering — ${count} guests`,
             unitAmountCents: Math.round(pkg.pricePerPerson * 100),
             quantity: count,
+            taxCode: payments.FOOD_TAX_CODE,
           }],
           successUrl: `${origin}/#/catering-confirmed?ref=${booking.ref}&session_id={CHECKOUT_SESSION_ID}`,
           cancelUrl: `${origin}/#/catering-book?package=${pkg.id}&canceled=1`,
@@ -399,7 +509,9 @@ const server = http.createServer(async (req, res) => {
           paymentNote: "Stripe unavailable — booking accepted without online payment.",
         });
         await sendCateringConfirmation(finalBooking);
-        return sendJSON(res, 201, { request: finalBooking });
+        const synced = await pushCateringToClover(finalBooking);
+        const withSync = await db.updateCateringRequest(booking.ref, { cloverSynced: synced });
+        return sendJSON(res, 201, { request: withSync || finalBooking });
       }
     } catch (e) {
       return sendJSON(res, 400, { error: "Couldn't read that booking. " + e.message });
@@ -418,9 +530,18 @@ const server = http.createServer(async (req, res) => {
     try {
       const session = await payments.retrieveCheckoutSession(sessionId);
       if (session.payment_status === "paid") {
-        const updated = await db.updateCateringRequest(ref, { status: "booked", paid: true, stripePaymentStatus: session.payment_status });
+        const updated = await db.updateCateringRequest(ref, {
+          status: "booked",
+          paid: true,
+          stripePaymentStatus: session.payment_status,
+          subtotal: Math.round((session.amount_subtotal || 0)) / 100,
+          tax: Math.round((session.total_details?.amount_tax || 0)) / 100,
+          total: Math.round((session.amount_total || 0)) / 100,
+        });
         await sendCateringConfirmation(updated);
-        return sendJSON(res, 200, { request: updated });
+        const synced = await pushCateringToClover(updated);
+        const withSync = await db.updateCateringRequest(ref, { cloverSynced: synced });
+        return sendJSON(res, 200, { request: withSync || updated });
       }
       return sendJSON(res, 200, { request: booking, paymentPending: true });
     } catch (e) {
@@ -447,6 +568,17 @@ const server = http.createServer(async (req, res) => {
     const updated = await db.updateCateringRequest(ref, { status: body.status });
     if (!updated) return sendJSON(res, 404, { error: "Request not found." });
     return sendJSON(res, 200, { request: updated });
+  }
+
+  // ---- Catering: retry Clover sync (kitchen) ----
+  if (parts[0] === "api" && parts[1] === "catering" && parts.length === 4 && parts[3] === "resync-clover" && req.method === "POST") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+    const ref = decodeURIComponent(parts[2]);
+    const booking = await db.getCateringRequest(ref);
+    if (!booking) return sendJSON(res, 404, { error: "Booking not found." });
+    const synced = await pushCateringToClover(booking);
+    const updated2 = await db.updateCateringRequest(ref, { cloverSynced: synced });
+    return sendJSON(res, synced ? 200 : 502, { request: updated2, synced });
   }
 
   // ---- Catering: list (kitchen) ----

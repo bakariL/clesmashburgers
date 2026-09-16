@@ -1,0 +1,15 @@
+{
+  "name": "Cleveland Smash Burgers",
+  "short_name": "CSB",
+  "description": "Order smash burgers ahead for pickup, or book catering for your next event.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1c1712",
+  "theme_color": "#1c1712",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

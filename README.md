@@ -74,6 +74,25 @@ no line-item customization — set in `CATERING_PACKAGES` near the top of
 `server.js`. That's the only place you need to touch to change prices,
 minimum headcounts, or what each package includes.
 
+**Stripe Tax is wired in too.** Every Checkout Session is created with
+`automatic_tax[enabled]=true` and a verified product tax code
+(`txcd_40060003`, "Food for Immediate Consumption" — covers both
+ordering and catering). It calculates **$0 tax** — not an error — until
+you add an active tax registration for your jurisdiction under
+**Stripe Dashboard → Tax → Registrations** (for a Cleveland-based
+business, that's Ohio state sales tax at minimum). That's a deliberate
+compliance decision, so it's not something this app does for you
+automatically.
+
+One consequence worth knowing: the totals shown on the Order and
+Catering pages *before* checkout are estimates (marked with `~`) using
+a flat 8% placeholder — the real tax is only known once Stripe
+collects the customer's address on its hosted page. After payment,
+`verify-payment` overwrites the stored order/booking with Stripe's
+actual subtotal/tax/total, so confirmations, the kitchen board, and
+your records always reflect what was really charged, even though the
+pre-checkout number was an estimate.
+
 ### 2. Data store (with a caveat)
 
 I did *not* reach for a real SQL database here. `better-sqlite3` (the
@@ -126,6 +145,45 @@ Without them, `notify.js` just logs what it *would have* sent to the
 terminal — prefixed with `[DEV]` — so you can see the exact message
 content while you're building without needing real accounts yet.
 
+## Clover POS
+
+Once an order or catering booking is confirmed paid, the app pushes it
+straight into your restaurant's **Clover** account, so it shows up on
+your register/KDS and a kitchen ticket can print — that's the actual
+"the order reaches the restaurant" part. Set two things in `.env`:
+
+```
+CLOVER_MERCHANT_ID=...
+CLOVER_API_TOKEN=...
+```
+
+Get both from **dashboard.clover.com → Setup → API Tokens** — generating
+a token there also shows you the Merchant ID. This is a private,
+single-restaurant token; there's no OAuth app-approval flow to deal
+with. **Without these set, orders just aren't pushed** — nothing else
+changes, customers still get their normal confirmation.
+
+Add `CLOVER_SANDBOX=true` to test against Clover's sandbox before
+pointing this at your real live account.
+
+**A quirk worth knowing**, confirmed against Clover's own developer
+community rather than assumed: a single custom line item doesn't
+reliably support a quantity multiplier — asking for `unitQty: 2` on one
+line item can show the wrong total on the ticket. So "2× Double Smash"
+gets sent as two separate line items, each priced as one unit
+(`clover.js` → `expandLineItems()`). Catering is different — one
+summary line item for the whole booking (e.g. "Office Lunch catering —
+40 guests"), since a kitchen prepping for an event needs a headcount to
+plan around, not 40 duplicate ticket lines.
+
+**If a push fails** (Clover's API is down, a token expired, whatever),
+the customer's order/booking still completes normally — a Clover
+hiccup never blocks a sale. It's just recorded as unsynced
+(`cloverSynced: false`), and the kitchen board (`/#/kitchen`) shows a
+**"⚠ Not synced to Clover" with a Retry button** right on that
+order's card, so staff can push it again with one click, or just take
+the order manually from what's already on the board.
+
 ## Pop-up locations & alerts
 
 Since you run out of a mobile stand with no fixed address, there's now
@@ -167,6 +225,7 @@ server.js                 API + static file server (still zero dependencies)
 db.js                     Data layer — atomic, queued file-based store
 payments.js               Stripe REST integration (fetch, no SDK)
 notify.js                 Twilio SMS + Resend email (fetch, no SDK)
+clover.js                 Clover POS integration (fetch, no SDK)
 env.js                    Tiny .env file loader (no dependency)
 .env.example              Every optional setting, documented
 data/orders.json          Orders land here
@@ -202,7 +261,9 @@ configured) for the alert.
 
 **Kitchen board:** `/#/kitchen` → enter the passcode if you set one →
 watch orders/catering requests appear as you submit them, try changing
-a status dropdown, and add/remove/notify pop-up stops.
+a status dropdown, add/remove/notify pop-up stops, and (if
+`CLOVER_MERCHANT_ID`/`CLOVER_API_TOKEN` are set) check that each order
+shows "✓ Synced to Clover."
 
 **Install the app:** *Get the App* in the nav. Real install prompt on
 Chrome/Edge/Android; "Add to Home Screen" instructions on iOS Safari.

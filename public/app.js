@@ -382,8 +382,9 @@ function ticket(opts = {}) {
     ${state.cart.length > 0 ? `
     <div class="ticket-totals">
       <div class="row"><span>Subtotal</span><span>${money(subtotal)}</span></div>
-      <div class="row"><span>Tax (8%)</span><span>${money(tax)}</span></div>
-      <div class="row total"><span>Total</span><span>${money(total)}</span></div>
+      <div class="row"><span>Est. tax</span><span>${money(tax)}</span></div>
+      <div class="row total"><span>Est. total</span><span>${money(total)}</span></div>
+      <div class="row" style="font-size:0.78rem; color:var(--steel);"><span>Final tax calculated at checkout</span></div>
     </div>
     ${showCheckoutBtn ? `
     <div class="ticket-actions">
@@ -445,7 +446,7 @@ function viewCheckout() {
               <textarea id="notes" name="notes" placeholder="Anything the kitchen should know"></textarea>
             </div>
 
-            <button type="submit" class="btn btn-primary btn-block">Place Order — ${money(cartSubtotal() * 1.08)}</button>
+            <button type="submit" class="btn btn-primary btn-block">Place Order — ~${money(cartSubtotal() * 1.08)}</button>
           </form>
         </div>
         <div class="ticket-col">
@@ -576,6 +577,7 @@ function viewCateringBook() {
 
         <div class="confirm-detail-card" style="margin:0 0 20px;">
           <div class="row"><span>${pkg.name} × <span id="cHeadcountEcho">${pkg.minHeadcount}</span> guests</span><span id="cTotalPreview">$${(pkg.pricePerPerson * pkg.minHeadcount).toFixed(2)}</span></div>
+          <div class="row" style="font-size:0.78rem; color:var(--steel);"><span>Tax calculated at checkout, added on top</span></div>
         </div>
 
         <div class="field-row">
@@ -624,7 +626,7 @@ function viewCateringBook() {
           <textarea id="cNotes" placeholder="Parking, timing, dietary notes, etc."></textarea>
         </div>
 
-        <button type="submit" class="btn btn-primary btn-block">Book &amp; Pay — <span id="cSubmitTotal">$${(pkg.pricePerPerson * pkg.minHeadcount).toFixed(2)}</span></button>
+        <button type="submit" class="btn btn-primary btn-block">Book &amp; Pay — ~<span id="cSubmitTotal">$${(pkg.pricePerPerson * pkg.minHeadcount).toFixed(2)}</span></button>
       </form>
 
       <p style="margin-top:14px; font-size:0.85rem; color:var(--steel);">
@@ -784,7 +786,17 @@ function viewKitchen() {
   </section>`;
 }
 
-function renderKitchenBoard(orders, cateringRequests) {
+function renderKitchenBoard(orders, cateringRequests, cloverEnabled) {
+  const cloverLine = (record, kind) => {
+    if (!cloverEnabled) return '';
+    return record.cloverSynced
+      ? `<div style="color:var(--pickle); font-size:0.78rem; margin-top:4px;">✓ Synced to Clover</div>`
+      : `<div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
+           <span style="color:var(--crust); font-size:0.78rem;">⚠ Not synced to Clover</span>
+           <button type="button" class="btn btn-dark btn-sm" data-resync-${kind}="${record.ref}">Retry</button>
+         </div>`;
+  };
+
   return `
   <div class="kitchen-grid">
     <div>
@@ -798,6 +810,7 @@ function renderKitchenBoard(orders, cateringRequests) {
             <div>${o.customer.name} · ${o.customer.phone}</div>
             <div>${o.items.reduce((n,i)=>n+i.qty,0)} items · ${money(o.total)}</div>
             <div style="color:var(--steel); font-size:0.8rem;">${new Date(o.createdAt).toLocaleString()}</div>
+            ${cloverLine(o, 'order')}
           </div>
           <select class="kitchen-status-select" data-order-ref="${o.ref}">
             ${ORDER_STATUSES.map(s => `<option value="${s}" ${s === o.status ? 'selected' : ''}>${s.replace(/_/g, ' ')}</option>`).join('')}
@@ -816,6 +829,7 @@ function renderKitchenBoard(orders, cateringRequests) {
             <div>${r.package ? r.package.name : ''} · ${r.contact.name} · ${r.contact.phone}</div>
             <div>${r.headcount} guests · ${r.eventDate} · ${money(r.total || 0)}</div>
             <div style="color:var(--steel); font-size:0.8rem;">${r.eventType}${r.eventAddress ? ` · ${r.eventAddress}` : ''}</div>
+            ${cloverLine(r, 'catering')}
           </div>
           <select class="kitchen-status-select" data-catering-ref="${r.ref}">
             ${CATERING_STATUSES.map(s => `<option value="${s}" ${s === r.status ? 'selected' : ''}>${s.replace(/_/g, ' ')}</option>`).join('')}
@@ -852,11 +866,12 @@ function startKitchenPolling() {
   const load = async () => {
     const passcode = localStorage.getItem("csb_kitchen_passcode") || "";
     try {
-      const [ordersRes, cateringRes, locationsRes, alertsRes] = await Promise.all([
+      const [ordersRes, cateringRes, locationsRes, alertsRes, cloverRes] = await Promise.all([
         fetch("/api/orders", { headers: { "x-kitchen-passcode": passcode } }),
         fetch("/api/catering", { headers: { "x-kitchen-passcode": passcode } }),
         fetch("/api/locations"),
         fetch("/api/alerts", { headers: { "x-kitchen-passcode": passcode } }),
+        fetch("/api/clover/status", { headers: { "x-kitchen-passcode": passcode } }),
       ]);
       if (ordersRes.status === 401 || cateringRes.status === 401 || alertsRes.status === 401) {
         state.kitchenAuthed = false;
@@ -868,9 +883,10 @@ function startKitchenPolling() {
       const cateringData = await cateringRes.json();
       const locationsData = await locationsRes.json();
       const alertsData = await alertsRes.json();
+      const cloverData = await cloverRes.json().catch(() => ({ enabled: false }));
 
       const board = document.getElementById("kitchenBoard");
-      if (board) board.innerHTML = renderKitchenBoard(ordersData.orders || [], cateringData.requests || []);
+      if (board) board.innerHTML = renderKitchenBoard(ordersData.orders || [], cateringData.requests || [], Boolean(cloverData.enabled));
       attachKitchenStatusHandlers();
 
       const schedule = document.getElementById("kitchenSchedule");
@@ -905,6 +921,44 @@ function attachKitchenStatusHandlers() {
         body: JSON.stringify({ status: sel.value }),
       });
       showToast(`${sel.dataset.cateringRef} marked ${sel.value}`);
+    });
+  });
+  document.querySelectorAll("[data-resync-order]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const passcode = localStorage.getItem("csb_kitchen_passcode") || "";
+      btn.disabled = true;
+      btn.textContent = "Syncing…";
+      try {
+        const res = await fetch(`/api/orders/${btn.dataset.resyncOrder}/resync-clover`, {
+          method: "POST",
+          headers: { "x-kitchen-passcode": passcode },
+        });
+        const data = await res.json();
+        showToast(data.synced ? `${btn.dataset.resyncOrder} synced to Clover` : "Still couldn't reach Clover — try again shortly");
+      } catch {
+        showToast("Still couldn't reach Clover — try again shortly");
+      }
+      btn.disabled = false;
+      btn.textContent = "Retry";
+    });
+  });
+  document.querySelectorAll("[data-resync-catering]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const passcode = localStorage.getItem("csb_kitchen_passcode") || "";
+      btn.disabled = true;
+      btn.textContent = "Syncing…";
+      try {
+        const res = await fetch(`/api/catering/${btn.dataset.resyncCatering}/resync-clover`, {
+          method: "POST",
+          headers: { "x-kitchen-passcode": passcode },
+        });
+        const data = await res.json();
+        showToast(data.synced ? `${btn.dataset.resyncCatering} synced to Clover` : "Still couldn't reach Clover — try again shortly");
+      } catch {
+        showToast("Still couldn't reach Clover — try again shortly");
+      }
+      btn.disabled = false;
+      btn.textContent = "Retry";
     });
   });
 }
@@ -1335,7 +1389,7 @@ function attachHandlers(route) {
       } catch (err) {
         errorBox.innerHTML = `<div class="form-error-banner">${err.message}</div>`;
         submitBtn.disabled = false;
-        submitBtn.textContent = `Place Order — ${money(cartSubtotal() * 1.08)}`;
+        submitBtn.textContent = `Place Order — ~${money(cartSubtotal() * 1.08)}`;
       }
     });
   }
@@ -1499,7 +1553,7 @@ function attachHandlers(route) {
       } catch (err) {
         errorBox.innerHTML = `<div class="form-error-banner">${err.message}</div>`;
         submitBtn.disabled = false;
-        submitBtn.textContent = `Book & Pay — ${document.getElementById("cSubmitTotal").textContent}`;
+        submitBtn.textContent = `Book & Pay — ~${document.getElementById("cSubmitTotal").textContent}`;
       }
     });
   }

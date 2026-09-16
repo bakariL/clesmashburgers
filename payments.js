@@ -37,7 +37,11 @@ async function stripeGet(pathname) {
 // and returns it. Generic on purpose — both the order flow and the
 // catering flow call this with their own line items.
 //
-// lineItems: [{ name, unitAmountCents, quantity }]
+// lineItems: [{ name, unitAmountCents, quantity, taxCode }]
+//   taxCode is a Stripe product tax code (e.g. "txcd_40060003" for
+//   "Food for Immediate Consumption") — optional per line item; omit it
+//   and Stripe falls back to whatever default tax code is set in your
+//   Dashboard under Tax settings, if any.
 // successUrl / cancelUrl: full URLs, e.g. from buildRedirectUrls() below
 // customerEmail: optional, prefills Stripe's checkout email field
 // metadata: optional flat { key: "value" } object, stored on the session
@@ -46,6 +50,13 @@ async function createCheckoutSession({ lineItems, successUrl, cancelUrl, custome
     mode: "payment",
     success_url: successUrl,
     cancel_url: cancelUrl,
+    // Stripe Tax: calculates real tax once you have an active tax
+    // registration for the customer's jurisdiction (Dashboard → Tax →
+    // Registrations). Returns $0 tax — not an error — until you do.
+    "automatic_tax[enabled]": "true",
+    // Collect enough address info for Stripe Tax to work, without
+    // implying this is a shippable order (we're pickup-only).
+    billing_address_collection: "auto",
   };
   if (customerEmail) params.customer_email = customerEmail;
   if (metadata) {
@@ -59,6 +70,12 @@ async function createCheckoutSession({ lineItems, successUrl, cancelUrl, custome
     params[`line_items[${i}][price_data][currency]`] = "usd";
     params[`line_items[${i}][price_data][unit_amount]`] = line.unitAmountCents;
     params[`line_items[${i}][price_data][product_data][name]`] = line.name;
+    // "exclusive" = the amount above is the pre-tax price; Stripe adds
+    // tax on top and shows it as its own line on the Checkout page.
+    params[`line_items[${i}][price_data][tax_behavior]`] = "exclusive";
+    if (line.taxCode) {
+      params[`line_items[${i}][price_data][product_data][tax_code]`] = line.taxCode;
+    }
   });
 
   return stripePost("checkout/sessions", params);
@@ -68,4 +85,11 @@ async function retrieveCheckoutSession(sessionId) {
   return stripeGet(`checkout/sessions/${sessionId}`);
 }
 
-module.exports = { isStripeConfigured, createCheckoutSession, retrieveCheckoutSession };
+// Verified against the live Tax Codes API (GET /v1/tax_codes/txcd_40060003)
+// on 2026-09-16 — "Food for Immediate Consumption." Covers both burger
+// orders and catering per Stripe's own description ("prepared foods,
+// ready-to-eat foods, or meals"). Not a substitute for your own tax
+// advice if you want catering classified separately.
+const FOOD_TAX_CODE = "txcd_40060003";
+
+module.exports = { isStripeConfigured, createCheckoutSession, retrieveCheckoutSession, FOOD_TAX_CODE };

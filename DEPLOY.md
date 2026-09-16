@@ -44,6 +44,7 @@ setup — **every one is optional**:
 | `STRIPE_SECRET_KEY` | payments stay in test mode (no real charge) |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` | texts get logged, not sent |
 | `RESEND_API_KEY` / `RESEND_FROM_EMAIL` | emails get logged, not sent |
+| `CLOVER_MERCHANT_ID` / `CLOVER_API_TOKEN` | orders just aren't pushed to your POS |
 | `KITCHEN_PASSWORD` | the kitchen board is open with no login |
 
 Set as many or as few as you're ready for — you can always add the

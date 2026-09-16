@@ -23,6 +23,12 @@ services:
         sync: false
       - key: RESEND_FROM_EMAIL
         sync: false
+      - key: CLOVER_MERCHANT_ID
+        sync: false
+      - key: CLOVER_API_TOKEN
+        sync: false
+      - key: CLOVER_SANDBOX
+        sync: false
       - key: KITCHEN_PASSWORD
         sync: false
 
