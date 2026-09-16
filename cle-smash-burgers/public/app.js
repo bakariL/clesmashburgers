@@ -241,7 +241,6 @@ function viewHome() {
           <a href="#/locations" class="btn btn-secondary">Find the Stand</a>
         </div>
       </div>
-      ${burgerArt()}
     </div>
   </section>
 
@@ -314,40 +313,6 @@ function viewHome() {
       </div>
     </div>
   </section>`;
-}
-
-function burgerArt() {
-  return `
-  <svg class="burger-art" viewBox="0 0 420 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Illustration of a smash burger cross-section on a grill grate">
-    <defs>
-      <pattern id="grate" width="40" height="40" patternUnits="userSpaceOnUse">
-        <rect width="40" height="40" fill="#241d16"/>
-        <rect y="16" width="40" height="8" fill="#2f261b"/>
-      </pattern>
-    </defs>
-    <rect x="0" y="230" width="420" height="130" fill="url(#grate)"/>
-    <ellipse cx="210" cy="255" rx="150" ry="16" fill="#0f0c08" opacity="0.5"/>
-    <!-- bottom bun -->
-    <path d="M90 250 q120 -26 240 0 v18 q-120 20 -240 0 z" fill="#d99a4e"/>
-    <!-- patty -->
-    <rect x="85" y="210" width="252" height="30" rx="6" fill="#5c3420"/>
-    <rect x="95" y="214" width="232" height="8" rx="4" fill="#7a4a2c" opacity="0.7"/>
-    <!-- cheese drape -->
-    <path d="M80 214 l30 -14 l30 14 l30 -14 l30 14 l30 -14 l30 14 l30 -14 l30 14 v10 h-260 z" fill="#e8a33d"/>
-    <!-- pickles -->
-    <circle cx="140" cy="204" r="7" fill="#6e7b3f"/>
-    <circle cx="200" cy="200" r="7" fill="#6e7b3f"/>
-    <circle cx="270" cy="205" r="7" fill="#6e7b3f"/>
-    <!-- top bun -->
-    <path d="M75 195 q135 -80 270 0 q10 5 5 16 h-280 q-5 -11 5 -16 z" fill="#e3a84f"/>
-    <path d="M75 195 q135 -80 270 0" fill="none" stroke="#c98a35" stroke-width="3"/>
-    <circle cx="160" cy="150" r="3" fill="#f6e9d8"/>
-    <circle cx="190" cy="140" r="3" fill="#f6e9d8"/>
-    <circle cx="225" cy="138" r="3" fill="#f6e9d8"/>
-    <circle cx="255" cy="145" r="3" fill="#f6e9d8"/>
-    <circle cx="145" cy="165" r="3" fill="#f6e9d8"/>
-    <circle cx="280" cy="160" r="3" fill="#f6e9d8"/>
-  </svg>`;
 }
 
 function stepper(activeIndex) {

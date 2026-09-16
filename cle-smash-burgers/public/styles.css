@@ -180,11 +180,8 @@ button {
   max-width: 1120px;
   margin: 0 auto;
   padding: 72px 24px 88px;
-  display: grid;
-  grid-template-columns: 1.1fr 0.9fr;
-  gap: 40px;
-  align-items: center;
 }
+.hero-inner > div { max-width: 60ch; }
 .eyebrow {
   color: var(--mustard);
   font-weight: 600;
@@ -213,7 +210,6 @@ button {
 }
 .hero-actions { display: flex; gap: 14px; flex-wrap: wrap; }
 
-.burger-art { width: 100%; height: auto; }
 
 /* ---------- Sections ---------- */
 section { padding: 72px 0; }
@@ -680,7 +676,7 @@ footer {
 @media (max-width: 860px) {
   .nav-links { display: none; }
   .nav-toggle { display: inline-flex; }
-  .hero-inner { grid-template-columns: 1fr; padding-top: 48px; }
+  .hero-inner { padding-top: 48px; }
   .order-layout { grid-template-columns: 1fr; }
   .ticket-col { position: static; }
   .info-grid, .pkg-grid, .kitchen-grid { grid-template-columns: 1fr; }
