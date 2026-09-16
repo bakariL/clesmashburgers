@@ -1,26 +1,33 @@
 # Cleveland Smash Burgers — Web App Prototype
 
 A working prototype with two flows — **online ordering** and **catering
-requests** — plus a "download the app" experience that installs the site
-itself as an app (no App Store needed).
+booking** (fixed packages, paid online, no back-and-forth quoting) —
+plus a "download the app" experience that installs the site itself as
+an app (no App Store needed).
+
+It also has real (optional) **payments**, **SMS/email confirmations**,
+a **kitchen dashboard**, a **pop-up location schedule with alerts**, and
+a **safer data store** — see "The four extensions" below.
 
 ## Stack, and why
 
-- **Backend:** Node.js, built-in `http` module only — **zero npm packages**.
-  `node server.js` is the entire install step. It serves the frontend and a
-  small JSON API, and persists orders/catering requests to flat JSON files
-  in `/data`.
-- **Frontend:** plain HTML/CSS/JS, no build step. `public/app.js` is a small
+- **Backend:** Node.js, built-in `http` module only — **still zero npm
+  packages**, even with payments and notifications wired in. `node
+  server.js` is the entire install step. Stripe, Twilio, and Resend are
+  all called directly over REST with `fetch` (built into Node 18+)
+  instead of their SDKs, specifically to avoid adding a dependency.
+- **Frontend:** plain HTML/CSS/JS, no build step. `public/app.js` is a
   hash-router single-page app (`#/`, `#/order`, `#/checkout`,
-  `#/catering`, etc.) so the order ticket stays live while you browse the
-  menu.
-- **"Mobile app":** the site is a installable PWA (manifest + service
-  worker), so "Get the App" actually installs it to a home screen with its
-  own icon and full-screen window — real, working, and needs no app store.
+  `#/catering`, `#/kitchen`, etc.) so the order ticket stays live while
+  you browse the menu.
+- **"Mobile app":** the site is an installable PWA (manifest + service
+  worker), so "Get the App" actually installs it to a home screen with
+  its own icon and full-screen window — real, working, no app store.
 
-This keeps the prototype runnable anywhere with just Node installed, with
-no API keys, accounts, or dependency installs to fight with. It's meant to
-be replaced piece by piece — see "What to extend" below.
+This keeps the prototype runnable anywhere with just Node installed —
+no build step, no required environment variables, nothing to fight with
+on day one. Every integration below degrades gracefully to a "test mode"
+until you add real credentials.
 
 ## Running it
 
@@ -28,79 +35,290 @@ be replaced piece by piece — see "What to extend" below.
 node server.js
 ```
 
-Then open **http://localhost:3000**. That's it — no `npm install`, no
-build step, no environment variables required.
+Then open **http://localhost:3000**. No `npm install`, no build step.
+Everything works immediately in test mode (see below).
+
+Deploying this somewhere real? See **[DEPLOY.md](DEPLOY.md)** for a
+Render-specific walkthrough (`package.json` and `render.yaml` in this
+repo are already set up for it — no code changes needed).
 
 (Optional) run on a different port: `PORT=4000 node server.js`.
+
+## The four extensions
+
+### 1. Payments (Stripe)
+
+Both **ordering** and **catering booking** use a real Stripe Checkout
+Session when configured — and the payment form (card entry, Apple Pay,
+Google Pay) is **embedded directly in the page**, not a redirect to a
+separate Stripe-hosted site. Add both keys to a `.env` file (copy
+`.env.example` → `.env`):
+
+```
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_PUBLISHABLE_KEY=pk_test_...
+```
+
+Get both from the same Dashboard page. The secret key stays
+server-side only; the publishable key is Stripe's own public-safe key,
+sent to the browser so it can load Stripe.js and mount the payment
+form.
+
+With both set, clicking "Place Order" or "Book & Pay" hides the form
+and mounts Stripe's real payment UI right there on the page. After a
+successful payment, Stripe redirects the browser back to your
+confirmation page, where the server verifies the payment and marks the
+order/booking confirmed. **Without** a secret key set, checkout skips
+straight to test mode: paid immediately, no card charged, no payment
+UI shown at all — so you can build/demo the rest of the app with zero
+Stripe setup.
+
+If the Stripe API call fails for any reason (bad key, no network), the
+server logs the error and **falls back to test mode automatically**
+rather than failing the customer's order or booking — you can see this
+in `server.js` under `/api/orders` and `/api/catering`.
+
+Catering pricing is fixed per package — `pricePerPerson × headcount`,
+no line-item customization — set in `CATERING_PACKAGES` near the top of
+`server.js`. That's the only place you need to touch to change prices,
+minimum headcounts, or what each package includes.
+
+**Stripe Tax is wired in too.** Every Checkout Session is created with
+`automatic_tax[enabled]=true` and a verified product tax code
+(`txcd_40060003`, "Food for Immediate Consumption" — covers both
+ordering and catering). It calculates **$0 tax** — not an error — until
+you add an active tax registration for your jurisdiction under
+**Stripe Dashboard → Tax → Registrations** (for a Cleveland-based
+business, that's Ohio state sales tax at minimum). That's a deliberate
+compliance decision, so it's not something this app does for you
+automatically.
+
+One consequence worth knowing: the totals shown on the Order and
+Catering pages *before* checkout are estimates (marked with `~`) using
+a flat 8% placeholder — the real tax is only known once Stripe
+collects the customer's address on its hosted page. After payment,
+`verify-payment` overwrites the stored order/booking with Stripe's
+actual subtotal/tax/total, so confirmations, the kitchen board, and
+your records always reflect what was really charged, even though the
+pre-checkout number was an estimate.
+
+### 2. Data store (with a caveat)
+
+I did *not* reach for a real SQL database here. `better-sqlite3` (the
+usual choice) needs native compilation, and after the path issues you
+ran into earlier, I didn't want to hand you an `npm install` that can
+fail on Windows without build tools. Instead, `db.js` wraps the same
+flat JSON files with:
+
+- **Atomic writes** — every write goes to a temp file and then renames
+  it into place, so a crash mid-write can't corrupt `orders.json`.
+- **A write queue** — concurrent requests are serialized per file, so
+  two orders landing at the same instant can't interleave and stomp on
+  each other (this matters more now that order creation can `await` a
+  Stripe call mid-transaction).
+
+This fixes the actual risk (corruption/races), without a fragile
+install. If you outgrow it later — multiple server processes, heavier
+traffic — swap the internals of `db.js` for Postgres/SQLite; every
+other file already calls it as `getOrder`/`updateOrder`/etc., so nothing
+else has to change.
+
+### 3. Kitchen dashboard
+
+Visit **`/#/kitchen`** (also linked at the bottom of every page) for a
+live board of orders and catering requests, polling every 5 seconds,
+with a dropdown per card to move it through its status
+(`received → in_progress → ready → completed` for orders;
+`new → contacted → booked → declined` for catering).
+
+Protect it with a passcode by setting `KITCHEN_PASSWORD` in `.env`.
+**Without it set, the board is wide open with no login** — fine for
+local development, but set a real passcode (and put this behind real
+auth — see "What's still worth extending" below) before this is ever
+reachable from outside your machine.
+
+### 4. SMS / email confirmations
+
+Set Twilio credentials and a Resend API key in `.env` to send real
+texts and emails:
+
+```
+TWILIO_ACCOUNT_SID=...
+TWILIO_AUTH_TOKEN=...
+TWILIO_FROM_NUMBER=+1...
+RESEND_API_KEY=...
+RESEND_FROM_EMAIL=orders@yourdomain.com
+```
+
+Without them, `notify.js` just logs what it *would have* sent to the
+terminal — prefixed with `[DEV]` — so you can see the exact message
+content while you're building without needing real accounts yet.
+
+## Clover POS
+
+Once an order or catering booking is confirmed paid, the app pushes it
+straight into your restaurant's **Clover** account, so it shows up on
+your register/KDS and a kitchen ticket can print — that's the actual
+"the order reaches the restaurant" part. Set two things in `.env`:
+
+```
+CLOVER_MERCHANT_ID=...
+CLOVER_API_TOKEN=...
+```
+
+Get both from **dashboard.clover.com → Setup → API Tokens** — generating
+a token there also shows you the Merchant ID. This is a private,
+single-restaurant token; there's no OAuth app-approval flow to deal
+with. **Without these set, orders just aren't pushed** — nothing else
+changes, customers still get their normal confirmation.
+
+Add `CLOVER_SANDBOX=true` to test against Clover's sandbox before
+pointing this at your real live account.
+
+**A quirk worth knowing**, confirmed against Clover's own developer
+community rather than assumed: a single custom line item doesn't
+reliably support a quantity multiplier — asking for `unitQty: 2` on one
+line item can show the wrong total on the ticket. So "2× Double Smash"
+gets sent as two separate line items, each priced as one unit
+(`clover.js` → `expandLineItems()`). Catering is different — one
+summary line item for the whole booking (e.g. "Office Lunch catering —
+40 guests"), since a kitchen prepping for an event needs a headcount to
+plan around, not 40 duplicate ticket lines.
+
+**If a push fails** (Clover's API is down, a token expired, whatever),
+the customer's order/booking still completes normally — a Clover
+hiccup never blocks a sale. It's just recorded as unsynced
+(`cloverSynced: false`), and the kitchen board (`/#/kitchen`) shows a
+**"⚠ Not synced to Clover" with a Retry button** right on that
+order's card, so staff can push it again with one click, or just take
+the order manually from what's already on the board.
+
+## Pop-up locations & alerts
+
+Since you run out of a mobile stand with no fixed address, there's now
+a **`/#/locations`** page ("Find Us" in the nav) built around that:
+
+- A "Next Stop" callout that surfaces whichever pop-up is coming up
+  soonest (and says "Happening Today" if it is).
+- The full upcoming schedule — date, time, address, a *Directions*
+  button straight to Google Maps, and a badge for **weekly stop** vs
+  **pop-up event**.
+- A sign-up form: name (optional), email and/or phone, and a zip code
+  so "near you" alerts mean something. Subscribing sends a real
+  confirmation text/email (or logs it in test mode, same as
+  orders/catering).
+- A working unsubscribe flow, by email or phone.
+- The homepage shows a live preview of the next few stops too.
+
+**Managing the schedule** happens from the kitchen board
+(`/#/kitchen`), since that's real day-to-day operations, not a one-time
+setup:
+
+- Add a stop (date, time, name, address, zip, notes, weekly vs. event).
+- Each stop gets a **Notify Nearby / Notify Everyone** button — press
+  it and every subscriber (optionally filtered to the same zip-code
+  area as the stop) gets a text/email automatically.
+- Remove old stops. Subscriber count is shown at the top.
+
+The "near you" filtering is a simple zip-prefix match (same first 3
+digits), not real distance — there's no geocoding API wired in. It's a
+reasonable proxy for a Cleveland-area zip cluster, and documented here
+so it's not a silent limitation: if you want actual mile-radius
+matching later, that's where a Google Maps/Mapbox geocoding call would
+slot in (see "What's still worth extending" below).
 
 ## What's in here
 
 ```
-server.js                 Zero-dependency API + static file server
-data/orders.json          Orders land here (created/append at runtime)
+server.js                 API + static file server (still zero dependencies)
+db.js                     Data layer — atomic, queued file-based store
+payments.js               Stripe REST integration (fetch, no SDK)
+notify.js                 Twilio SMS + Resend email (fetch, no SDK)
+clover.js                 Clover POS integration (fetch, no SDK)
+env.js                    Tiny .env file loader (no dependency)
+.env.example              Every optional setting, documented
+data/orders.json          Orders land here
 data/catering.json        Catering requests land here
+data/locations.json       Pop-up schedule stops land here
+data/alerts.json          Location-alert subscribers land here
 public/
   index.html               App shell
-  app.js                    All frontend logic (router, cart, forms, PWA install)
+  app.js                    Frontend logic (router, cart, forms, schedule, kitchen board, PWA install)
   styles.css                Design system (colors, type, components)
   manifest.webmanifest      Makes the site installable
   sw.js                     Service worker (offline app-shell caching)
-  icons/                    Generated placeholder app icons
+  icons/                    App icons generated from your real logo
 ```
 
-## Try the two flows
+## Try it
 
-**Ordering:** Home → *Order Now* → add a few items (they land on the ticket
-on the right) → *Continue to Details* → fill in name + phone → *Place
-Order* → you get a reference code (`CSB-XXXX`).
+**Ordering:** Home → *Order Now* → add items → *Continue to Details* →
+name + phone → *Place Order*. In test mode you land straight on a
+confirmation with a `CSB-XXXX` code; with Stripe configured, the
+payment form (card / Apple Pay / Google Pay) loads right there on the
+page instead.
 
-**Catering:** Home → *Cater Your Event* → fill in the form → submit → you
-get a reference code (`CATER-XXXX`).
+**Catering:** Home → *Cater Your Event* → pick a package → enter
+headcount (total updates live) + date + address + contact info →
+*Book & Pay*. Same test-mode/Stripe behavior as ordering. Anyone with
+booking trouble is pointed to a phone number — there's no separate
+"request a quote" form anymore.
 
-**Install the app:** click *Get the App* in the nav (or the footer link).
-On Chrome/Edge/Android it triggers the real browser install prompt; on
-Safari/iOS (which doesn't support that prompt) it shows the "Add to Home
-Screen" instructions instead.
+**Find the Stand:** `/#/locations` → sign up with a zip code → go to
+`/#/kitchen` and add a stop with that same zip → hit *Notify Nearby* →
+check the terminal (or your phone/inbox, if Twilio/Resend are
+configured) for the alert.
 
-Every order and catering request is appended to `data/orders.json` /
-`data/catering.json` as it's submitted — open those files after testing to
-see the raw records.
+**Kitchen board:** `/#/kitchen` → enter the passcode if you set one →
+watch orders/catering requests appear as you submit them, try changing
+a status dropdown, add/remove/notify pop-up stops, and (if
+`CLOVER_MERCHANT_ID`/`CLOVER_API_TOKEN` are set) check that each order
+shows "✓ Synced to Clover."
 
-## What I'd extend first
+**Install the app:** *Get the App* in the nav. Real install prompt on
+Chrome/Edge/Android; "Add to Home Screen" instructions on iOS Safari.
 
-Roughly in the order I'd tackle them:
+## What's still worth extending
 
-1. **Payments.** There's no real payment step right now — checkout collects
-   contact info and submits the order, but nothing charges a card. Wire in
-   Stripe (Checkout or Payment Intents) between "Place Order" and the
-   confirmation screen.
-2. **A real database.** `data/*.json` is a flat-file store — great for a
-   prototype, but it'll race/corrupt under concurrent writes. Swap
-   `readJSON`/`writeJSON` in `server.js` for Postgres/SQLite (the API shape
-   stays the same).
-3. **Kitchen-facing view.** `GET /api/orders` and `GET /api/catering`
-   already exist and return everything — right now nothing in the UI
-   reads them. That's the seed of a "live orders" screen for the counter,
-   with status updates (received → in progress → ready).
-4. **SMS/email confirmations.** The order/catering confirmation screens
-   promise a text or email; nothing actually sends one yet. Twilio for SMS,
-   Resend/Postgres-backed email for catering follow-up.
-5. **Real menu images + item customization.** The menu is text-only with
-   an illustrated hero graphic. Add photos per item, and structured
-   modifiers (temp, add bacon, no onion) instead of the notes free-text
-   field.
-6. **Auth for repeat customers.** Nothing is saved between visits except the
-   cart (in `localStorage`). Accounts would unlock order history, saved
-   addresses, and faster repeat ordering.
-7. **True native app.** The installable PWA covers "add to home screen"
-   well, but if push notifications or deeper device integration matter
-   later, wrap this in React Native or Capacitor — the API in `server.js`
-   can serve both the web app and a native client unchanged.
+1. **Real auth for the kitchen board.** The passcode is a shared secret
+   in one env var — fine for a single-location prototype, not real
+   access control. Move to per-staff accounts before relying on it.
+2. **Stripe webhooks.** Payment verification currently happens when the
+   customer's browser redirects back from Stripe — reliable in
+   practice, but a `POST /api/webhooks/stripe` endpoint listening for
+   `checkout.session.completed` is the more bulletproof pattern (covers
+   the case where the customer closes the tab right after paying).
+3. **Real menu images + item customization.** Menu is text-only right
+   now. Add photos per item, and structured modifiers (temp, add bacon,
+   no onion) instead of the free-text notes field.
+4. **Accounts for repeat customers.** Nothing persists between visits
+   except the cart (`localStorage`). Accounts unlock order history and
+   faster repeat ordering.
+5. **A real SQL database**, if this grows past a single Node process —
+   see the caveat in "Data store" above for exactly where to make that
+   swap.
+6. **True native app**, if push notifications or deeper device
+   integration matter later — React Native or Capacitor could reuse the
+   same API unchanged.
+7. **Real geocoding for alerts.** "Notify Nearby" currently matches on
+   the first 3 digits of a zip code — a reasonable proxy for Cleveland,
+   but a real mile-radius match needs a geocoding API (Google Maps or
+   Mapbox) to convert zips/addresses to coordinates first.
 
 ## Design notes
 
-The visual language leans into the subject: a griddle/diner-ticket
-aesthetic — the order cart is a literal order ticket with a torn-paper
-edge, the menu reads like a chalkboard list rather than product cards, and
-the palette (char black, smashed-crust red-brown, mustard, pickle green)
-comes from the food itself rather than a generic brand-kit look.
+The palette is pulled directly from your logo — black, white, and one
+vivid red (`#E2131B`, sampled from the badge and used as the single
+accent color throughout) — rather than an invented brand-kit look. The
+"CLEVELAND" wordmark's condensed bold feel carries through as the site's
+display type (Oswald), and the logo's brush-marker "SMASH BURGERS" script
+shows up as an accent font (Permanent Marker) on the hero headline and
+the order-confirmation stamp, so it reads as the same brand, not a
+different one.
+
+Structurally it's still a griddle/diner-ticket concept — the order cart
+is a literal order ticket, the menu reads like a chalkboard list rather
+than product cards — just recolored to match: white "receipt paper"
+tickets and cards, black chrome, red for anything actionable (buttons,
+prices you can tap, the confirmation stamp). Your actual logo badge is
+now used site-wide (nav, footer, PWA icons) instead of a placeholder.
