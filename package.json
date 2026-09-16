@@ -1,0 +1,13 @@
+{
+  "name": "cle-smash-burgers",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cleveland Smash Burgers — online ordering, catering booking, pop-up schedule & alerts, kitchen dashboard.",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {}
+}

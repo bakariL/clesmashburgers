@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: cle-smash-burgers
+    runtime: node
+    plan: starter          # cheapest plan that supports a persistent disk + always-on
+    buildCommand: ""       # nothing to build — no dependencies, no bundler
+    startCommand: node server.js
+    healthCheckPath: /
+    disk:
+      name: cle-smash-burgers-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
+    envVars:
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      - key: KITCHEN_PASSWORD
+        sync: false
+
+# Notes:
+# - PORT is set automatically by Render — server.js already reads
+#   process.env.PORT, so nothing to configure there.
+# - Every envVar above is optional (sync: false just means "prompt me
+#   for this in the dashboard instead of storing it in this file").
+#   Leave any of them blank in the Render dashboard and that feature
+#   stays in test mode, same as running locally with no .env.
+# - The disk mount path assumes the repo root is deployed directly
+#   (server.js, db.js, package.json, render.yaml all at the top level
+#   of the repo — not nested inside a subfolder). See DEPLOY.md.
