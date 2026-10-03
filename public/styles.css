@@ -543,25 +543,6 @@ button.cal-cell:hover { border-color: var(--crust); color: var(--crust); }
 .confirm-detail-card .row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 0.92rem; border-bottom: 1px dotted #e2e2e2; }
 .confirm-detail-card .row:last-child { border-bottom: none; }
 
-/* ---------- Cards / grids ---------- */
-.info-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 24px;
-}
-.info-card {
-  background: var(--paper);
-  border: 1px solid #e2e2e2;
-  padding: 22px;
-}
-.info-card h3 {
-  font-family: var(--font-display);
-  text-transform: uppercase;
-  font-size: 1.05rem;
-  margin: 0 0 8px;
-}
-.info-card p { margin: 0; color: #5c5c5c; font-size: 0.92rem; line-height: 1.5; }
-
 /* ---------- Catering ---------- */
 .catering-hero {
   background: var(--crust);
@@ -738,7 +719,7 @@ footer {
   .hero-inner { padding-top: 48px; }
   .order-layout { grid-template-columns: 1fr; }
   .ticket-col { position: static; }
-  .info-grid, .pkg-grid, .kitchen-grid { grid-template-columns: 1fr; }
+  .pkg-grid, .kitchen-grid { grid-template-columns: 1fr; }
   .footer-grid { grid-template-columns: 1fr; }
   .field-row { grid-template-columns: 1fr; }
   .install-card { flex-direction: column; text-align: center; }

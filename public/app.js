@@ -251,12 +251,10 @@ function viewHome() {
   <section class="hero">
     <div class="hero-inner">
       <div>
-        <div class="eyebrow">CLEVELAND, OHIO · GRIDDLE-SMASHED DAILY</div>
-        <h1 class="h-display">SMASHED&nbsp;THIN.<br>STACKED&nbsp;HIGH.<br><em>CLEVELAND MADE.</em></h1>
-        <p class="lede">Crispy-edge smash burgers, hand-cut fries, and shakes — order ahead for pickup or bring us to your next event. No app store required, just the griddle.</p>
+        <h1 class="h-display">The Best Burger in Cleveland.<br><em>Wagyu Wagyu!</em></h1>
+        <p class="lede">Wagyu smash burgers, fresh-cut fries, and coke floats — order ahead for pickup or cater for an event.</p>
         <div class="hero-actions">
           <a href="#/order" class="btn btn-primary">Order Now</a>
-          <a href="#/locations" class="btn btn-secondary">Find a Location</a>
         </div>
       </div>
     </div>
@@ -270,31 +268,6 @@ function viewHome() {
           <p>Three locations around Cleveland.</p>
         </div>
         <a href="#/locations" class="btn btn-dark">All Locations</a>
-      </div>
-    </div>
-  </section>
-
-  <section>
-    <div class="container">
-      <div class="section-head">
-        <div>
-          <h2 class="h-display">Why it's smashed</h2>
-          <p>Every patty hits a screaming-hot griddle and gets flattened hard — more surface area, more crust, more flavor.</p>
-        </div>
-      </div>
-      <div class="info-grid">
-        <div class="info-card">
-          <h3>Fresh, never frozen</h3>
-          <p>Beef is ground and portioned daily. Smashed to order, never held under a heat lamp.</p>
-        </div>
-        <div class="info-card">
-          <h3>Griddled buns</h3>
-          <p>Every bun gets buttered and griddled so it holds up to the juice and the char.</p>
-        </div>
-        <div class="info-card">
-          <h3>Pickup in ~15 min</h3>
-          <p>Order ahead from this site and skip the line — we'll have it ready when you walk in.</p>
-        </div>
       </div>
     </div>
   </section>
