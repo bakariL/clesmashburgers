@@ -11,6 +11,12 @@
   <link rel="icon" href="/icons/icon-192.png">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <link rel="stylesheet" href="/styles.css">
+
+  <!-- Stripe.js must be loaded directly from js.stripe.com (never bundled
+       or self-hosted) to stay PCI compliant. It's inert until we call
+       Stripe(publishableKey), so it's safe to include even when payments
+       aren't configured yet. -->
+  <script src="https://js.stripe.com/v3/"></script>
 </head>
 <body>
   <div id="app"></div>

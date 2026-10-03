@@ -30,9 +30,9 @@ step specifically, just ask — happy to go command-by-command.
    Node, Build Command = *(leave blank)*, Start Command =
    `node server.js`.)
 4. Pick a plan that supports persistent disks — Render's free tier
-   doesn't, and this app needs one to keep orders/catering/schedule
-   data across restarts. Check Render's current plan names/pricing in
-   their dashboard, since these change.
+   doesn't, and this app needs one to keep orders/catering data across
+   restarts. Check Render's current plan names/pricing in their
+   dashboard, since these change.
 
 ## 3. Fill in environment variables
 
@@ -41,7 +41,7 @@ setup — **every one is optional**:
 
 | Variable | Leave blank and... |
 |---|---|
-| `STRIPE_SECRET_KEY` | payments stay in test mode (no real charge) |
+| `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` | payments stay in test mode (no real charge, no payment UI shown) |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` | texts get logged, not sent |
 | `RESEND_API_KEY` / `RESEND_FROM_EMAIL` | emails get logged, not sent |
 | `CLOVER_MERCHANT_ID` / `CLOVER_API_TOKEN` | orders just aren't pushed to your POS |
@@ -55,11 +55,10 @@ redeploying code.
 
 `render.yaml` mounts a disk at `/opt/render/project/src/data` —
 that matches where `db.js` writes (`data/orders.json`,
-`data/catering.json`, `data/locations.json`, `data/alerts.json`)
-*only if* step 1's folder structure is correct. After your first
-deploy, check the Render **Shell** tab and run `ls data/` — you
-should see those four files. If that path doesn't exist, your repo
-root is nested one level too deep (back to step 1).
+`data/catering.json`) *only if* step 1's folder structure is correct.
+After your first deploy, check the Render **Shell** tab and run
+`ls data/` — you should see those two files. If that path doesn't
+exist, your repo root is nested one level too deep (back to step 1).
 
 ## 5. First deploy
 

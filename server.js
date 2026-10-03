@@ -117,6 +117,31 @@ const CATERING_PACKAGES = [
   },
 ];
 
+// Our 3 storefronts — fixed locations, not a rotating pop-up schedule.
+const LOCATIONS = [
+  {
+    id: "parma",
+    name: "Parma",
+    address: "6164 Broadview Rd, Parma, OH 44134",
+    hours: "12:00 PM – 9:30 PM daily",
+    phone: "(216) 555-0142",
+  },
+  {
+    id: "cleveland",
+    name: "Cleveland",
+    address: "3915 Carnegie Ave, Cleveland, OH 44115",
+    hours: "12:00 PM – 9:30 PM daily",
+    phone: "(216) 555-0142",
+  },
+  {
+    id: "garfield-heights",
+    name: "Garfield Heights",
+    address: "4545 E. 131st St, Garfield Heights, OH 44105",
+    hours: "12:00 PM – 9:30 PM daily",
+    phone: "(216) 555-0142",
+  },
+];
+
 function kitchenAuthorized(req) {
   const configured = process.env.KITCHEN_PASSWORD;
   if (!configured) return true; // dev mode — no passcode set
@@ -131,16 +156,18 @@ async function sendOrderConfirmations(order) {
     })
     .join(", ");
 
+  const pickupLine = order.location ? `Pickup at our ${order.location.name} location (${order.location.address}).` : "";
+
   await notify.sendSMS(
     order.customer.phone,
-    `Cleveland Smash Burgers: order ${order.ref} received! ${itemsSummary}. Total $${order.total.toFixed(2)}. We'll text when it's ready.`
+    `Cleveland Smash Burgers: order ${order.ref} received! ${itemsSummary}. Total $${order.total.toFixed(2)}. ${pickupLine} We'll text when it's ready.`
   );
 
   if (order.customer.email) {
     await notify.sendEmail(
       order.customer.email,
       `Order ${order.ref} confirmed — Cleveland Smash Burgers`,
-      `<h2>Thanks, ${order.customer.name}!</h2><p>Your order <strong>${order.ref}</strong> is in.</p><p>${itemsSummary}</p><p>Total: $${order.total.toFixed(2)}</p><p>We'll text ${order.customer.phone} when it's ready.</p>`
+      `<h2>Thanks, ${order.customer.name}!</h2><p>Your order <strong>${order.ref}</strong> is in.</p><p>${itemsSummary}</p><p>Total: $${order.total.toFixed(2)}</p>${order.location ? `<p><strong>Pickup location:</strong> ${order.location.name} — ${order.location.address}</p>` : ""}<p>We'll text ${order.customer.phone} when it's ready.</p>`
     );
   }
 }
@@ -175,7 +202,11 @@ async function pushOrderToClover(order) {
     // Tax as its own line so Clover's total matches what was actually charged.
     if (order.tax > 0) lineItems.push({ name: "Tax", priceCents: Math.round(order.tax * 100) });
 
+    // All 3 locations share one Clover account, so the pickup location
+    // has to be loud and first in the note — it's the only thing telling
+    // staff at a given store whether this order is theirs.
     const note = [
+      order.location ? `PICKUP AT: ${order.location.name.toUpperCase()}` : "",
       `Order ${order.ref}`,
       order.customer.name,
       order.customer.phone,
@@ -219,20 +250,6 @@ async function pushCateringToClover(booking) {
   }
 }
 
-async function sendLocationAlert(subscriber, location) {
-  const when = `${location.date}${location.startTime ? ` ${location.startTime}` : ""}${location.endTime ? `–${location.endTime}` : ""}`;
-  const text = `Cleveland Smash Burgers pop-up alert: we'll be at ${location.name}, ${location.address} on ${when}.${location.notes ? ` ${location.notes}` : ""}`;
-
-  if (subscriber.phone) await notify.sendSMS(subscriber.phone, text);
-  if (subscriber.email) {
-    await notify.sendEmail(
-      subscriber.email,
-      "New pop-up near you — Cleveland Smash Burgers",
-      `<p>${text}</p>`
-    );
-  }
-}
-
 function get(req) {
   return new URL(req.url, `http://${req.headers.host}`);
 }
@@ -257,6 +274,14 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 200, { enabled: clover.isCloverConfigured() });
   }
 
+  // ---- Stripe: public config (publishable key is safe to expose) ----
+  if (url.pathname === "/api/stripe-config" && req.method === "GET") {
+    return sendJSON(res, 200, {
+      enabled: payments.isStripeConfigured(),
+      publishableKey: payments.getPublishableKey(),
+    });
+  }
+
   // ---- Kitchen auth ----
   if (url.pathname === "/api/kitchen/login" && req.method === "POST") {
     const body = await readBody(req).catch(() => ({}));
@@ -270,13 +295,17 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/api/orders" && req.method === "POST") {
     try {
       const body = await readBody(req);
-      const { items, customer, fulfillment, notes } = body;
+      const { items, customer, fulfillment, notes, locationId } = body;
 
       if (!Array.isArray(items) || items.length === 0) {
         return sendJSON(res, 400, { error: "Your order has no items yet." });
       }
       if (!customer || !customer.name || !customer.phone) {
         return sendJSON(res, 400, { error: "Name and phone are required." });
+      }
+      const location = LOCATIONS.find((l) => l.id === locationId);
+      if (!location) {
+        return sendJSON(res, 400, { error: "Please choose a pickup location." });
       }
 
       const subtotal = items.reduce((sum, i) => {
@@ -291,6 +320,7 @@ const server = http.createServer(async (req, res) => {
         ref: makeRefCode("CSB"),
         items,
         customer,
+        location: { id: location.id, name: location.name, address: location.address },
         fulfillment: fulfillment || "pickup",
         notes: notes || "",
         subtotal: Math.round(subtotal * 100) / 100,
@@ -332,13 +362,12 @@ const server = http.createServer(async (req, res) => {
         const origin = requestOrigin(req);
         const session = await payments.createCheckoutSession({
           lineItems,
-          successUrl: `${origin}/#/order-confirmed?ref=${order.ref}&session_id={CHECKOUT_SESSION_ID}`,
-          cancelUrl: `${origin}/#/checkout?canceled=1`,
+          returnUrl: `${origin}/#/order-confirmed?ref=${order.ref}&session_id={CHECKOUT_SESSION_ID}`,
           customerEmail: order.customer.email || undefined,
           metadata: { order_ref: order.ref },
         });
         await db.updateOrder(order.ref, { stripeSessionId: session.id });
-        return sendJSON(res, 201, { order, checkoutUrl: session.url });
+        return sendJSON(res, 201, { order, clientSecret: session.client_secret });
       } catch (e) {
         // Stripe misconfigured/unreachable — don't block the customer, fall back to test mode.
         console.error("Stripe checkout session failed, falling back to test mode:", e.message);
@@ -494,13 +523,12 @@ const server = http.createServer(async (req, res) => {
             quantity: count,
             taxCode: payments.FOOD_TAX_CODE,
           }],
-          successUrl: `${origin}/#/catering-confirmed?ref=${booking.ref}&session_id={CHECKOUT_SESSION_ID}`,
-          cancelUrl: `${origin}/#/catering-book?package=${pkg.id}&canceled=1`,
+          returnUrl: `${origin}/#/catering-confirmed?ref=${booking.ref}&session_id={CHECKOUT_SESSION_ID}`,
           customerEmail: contact.email,
           metadata: { catering_ref: booking.ref },
         });
         await db.updateCateringRequest(booking.ref, { stripeSessionId: session.id });
-        return sendJSON(res, 201, { request: booking, checkoutUrl: session.url });
+        return sendJSON(res, 201, { request: booking, clientSecret: session.client_secret });
       } catch (e) {
         console.error("Stripe checkout session failed, falling back to test mode:", e.message);
         const finalBooking = await db.updateCateringRequest(booking.ref, {
@@ -587,119 +615,9 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 200, { requests: await db.getCateringRequests() });
   }
 
-  // ---- Locations / pop-up schedule: list (public) ----
+  // ---- Locations: our 3 storefronts (public) ----
   if (url.pathname === "/api/locations" && req.method === "GET") {
-    return sendJSON(res, 200, { locations: await db.getLocations() });
-  }
-
-  // ---- Locations: create (kitchen) ----
-  if (url.pathname === "/api/locations" && req.method === "POST") {
-    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
-    const body = await readBody(req).catch(() => ({}));
-    const { date, startTime, endTime, name, address, zip, notes, type } = body;
-    if (!date || !name || !address) {
-      return sendJSON(res, 400, { error: "Date, stop name, and address are required." });
-    }
-    const location = {
-      id: crypto.randomUUID(),
-      date,
-      startTime: startTime || "",
-      endTime: endTime || "",
-      name,
-      address,
-      zip: (zip || "").trim(),
-      notes: notes || "",
-      type: type === "event" ? "event" : "weekly",
-      notifiedAt: null,
-      createdAt: new Date().toISOString(),
-    };
-    await db.createLocation(location);
-    return sendJSON(res, 201, { location });
-  }
-
-  // ---- Locations: update / delete (kitchen) ----
-  if (parts[0] === "api" && parts[1] === "locations" && parts.length === 3 && parts[2] !== "notify") {
-    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
-    const id = decodeURIComponent(parts[2]);
-
-    if (req.method === "PATCH") {
-      const body = await readBody(req).catch(() => ({}));
-      const updated = await db.updateLocation(id, body);
-      if (!updated) return sendJSON(res, 404, { error: "Stop not found." });
-      return sendJSON(res, 200, { location: updated });
-    }
-
-    if (req.method === "DELETE") {
-      const removed = await db.deleteLocation(id);
-      if (!removed) return sendJSON(res, 404, { error: "Stop not found." });
-      return sendJSON(res, 200, { ok: true });
-    }
-  }
-
-  // ---- Locations: notify subscribers about a stop (kitchen) ----
-  if (parts[0] === "api" && parts[1] === "locations" && parts.length === 4 && parts[3] === "notify" && req.method === "POST") {
-    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
-    const id = decodeURIComponent(parts[2]);
-    const body = await readBody(req).catch(() => ({}));
-
-    const locations = await db.getLocations();
-    const location = locations.find((l) => l.id === id);
-    if (!location) return sendJSON(res, 404, { error: "Stop not found." });
-
-    const allSignups = await db.getAlertSignups();
-    const nearOnly = Boolean(body.nearOnly) && Boolean(location.zip);
-    const targets = nearOnly
-      ? allSignups.filter((s) => s.zip && s.zip.slice(0, 3) === location.zip.slice(0, 3))
-      : allSignups;
-
-    let sent = 0;
-    for (const sub of targets) {
-      await sendLocationAlert(sub, location);
-      sent++;
-    }
-
-    await db.updateLocation(id, { notifiedAt: new Date().toISOString() });
-    return sendJSON(res, 200, { notified: sent, of: allSignups.length, nearOnly });
-  }
-
-  // ---- Alerts: subscribe (public) ----
-  if (url.pathname === "/api/alerts/subscribe" && req.method === "POST") {
-    const body = await readBody(req).catch(() => ({}));
-    const { name, email, phone, zip } = body;
-
-    if (!zip) return sendJSON(res, 400, { error: "A zip code is required so we know where 'near you' means." });
-    if (!email && !phone) return sendJSON(res, 400, { error: "Add an email or phone number so we can actually alert you." });
-
-    const signup = {
-      id: crypto.randomUUID(),
-      name: name || "",
-      email: email || "",
-      phone: phone || "",
-      zip: String(zip).trim(),
-      createdAt: new Date().toISOString(),
-    };
-    await db.createAlertSignup(signup);
-
-    const confirmMsg = `You're on the list for Cleveland Smash Burgers pop-up alerts near ${signup.zip}. We'll let you know when we're near you.`;
-    if (signup.phone) await notify.sendSMS(signup.phone, confirmMsg);
-    if (signup.email) await notify.sendEmail(signup.email, "You're subscribed — Cleveland Smash Burgers alerts", `<p>${confirmMsg}</p>`);
-
-    return sendJSON(res, 201, { signup });
-  }
-
-  // ---- Alerts: unsubscribe (public) ----
-  if (url.pathname === "/api/alerts/unsubscribe" && req.method === "POST") {
-    const body = await readBody(req).catch(() => ({}));
-    const { email, phone } = body;
-    if (!email && !phone) return sendJSON(res, 400, { error: "Give us the email or phone number you signed up with." });
-    const removed = await db.removeAlertSignupsByContact({ email, phone });
-    return sendJSON(res, 200, { removed });
-  }
-
-  // ---- Alerts: list subscribers (kitchen) ----
-  if (url.pathname === "/api/alerts" && req.method === "GET") {
-    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
-    return sendJSON(res, 200, { signups: await db.getAlertSignups() });
+    return sendJSON(res, 200, { locations: LOCATIONS });
   }
 
   // ---- static files ----

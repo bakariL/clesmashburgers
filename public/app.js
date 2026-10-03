@@ -18,19 +18,28 @@ const FALLBACK_CATERING_PACKAGES = [
   { id: "premium-event", name: "Premium Event", pricePerPerson: 26, minHeadcount: 30, description: "Full-service catering for weddings, corporate events, and larger parties.", includes: ["Full on-site griddle service", "Two sides + shakes", "Staff for up to 3 hours", "Custom signage with your event name"] },
 ];
 
+const FALLBACK_LOCATIONS = [
+  { id: "parma", name: "Parma", address: "6164 Broadview Rd, Parma, OH 44134", hours: "12:00 PM – 9:30 PM daily", phone: "(216) 555-0142" },
+  { id: "cleveland", name: "Cleveland", address: "3915 Carnegie Ave, Cleveland, OH 44115", hours: "12:00 PM – 9:30 PM daily", phone: "(216) 555-0142" },
+  { id: "garfield-heights", name: "Garfield Heights", address: "4545 E. 131st St, Garfield Heights, OH 44105", hours: "12:00 PM – 9:30 PM daily", phone: "(216) 555-0142" },
+];
+
 const state = {
   menu: FALLBACK_MENU,
   cateringPackages: FALLBACK_CATERING_PACKAGES,
+  locations: FALLBACK_LOCATIONS,
   cart: JSON.parse(localStorage.getItem("csb_cart") || "[]"),
   lastOrder: JSON.parse(sessionStorage.getItem("csb_last_order") || "null"),
   lastCatering: JSON.parse(sessionStorage.getItem("csb_last_catering") || "null"),
   fulfillment: "pickup",
   deferredInstallPrompt: null,
   kitchenAuthed: false,
+  stripeEnabled: false,
+  stripePublishableKey: "",
 };
 
 const ORDER_STATUSES = ["pending_payment", "received", "in_progress", "ready", "completed", "canceled"];
-const CATERING_STATUSES = ["new", "contacted", "booked", "declined"];
+const CATERING_STATUSES = ["pending_payment", "booked", "in_progress", "completed", "canceled"];
 let kitchenPollTimer = null;
 
 function saveCart() {
@@ -82,6 +91,42 @@ function showToast(msg) {
   toastTimer = setTimeout(() => el.remove(), 2200);
 }
 
+// Mounts Stripe's Embedded Checkout (card entry, Apple Pay, Google Pay)
+// directly into a container on the current page — the customer never
+// leaves the site. formEl is hidden while the payment form is shown; if
+// something goes wrong before Stripe's iframe takes over, we bring the
+// form back so the customer isn't stuck looking at a blank page.
+async function mountEmbeddedCheckout(clientSecret, containerId, formEl) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  if (!window.Stripe) {
+    showToast("Payment form couldn't load — please try again.");
+    return;
+  }
+  if (!state.stripePublishableKey) {
+    showToast("Payment isn't fully configured yet — please try again shortly.");
+    return;
+  }
+
+  try {
+    if (formEl) formEl.style.display = "none";
+    container.style.display = "block";
+    container.innerHTML = `<p style="color:var(--steel); padding:20px 0;">Loading payment form…</p>`;
+
+    const stripe = window.Stripe(state.stripePublishableKey);
+    const checkout = await stripe.initEmbeddedCheckout({
+      fetchClientSecret: () => Promise.resolve(clientSecret),
+    });
+    container.innerHTML = "";
+    checkout.mount(`#${containerId}`);
+  } catch (err) {
+    container.style.display = "none";
+    if (formEl) formEl.style.display = "";
+    showToast("Couldn't load the payment form — please try again.");
+  }
+}
+
 // ---------------- Router ----------------
 
 function currentRoute() {
@@ -117,6 +162,25 @@ async function init() {
     }
   } catch {
     // offline or API not running yet — fallback packages already in state
+  }
+  try {
+    const res = await fetch("/api/locations");
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.locations) && data.locations.length) state.locations = data.locations;
+    }
+  } catch {
+    // offline or API not running yet — fallback locations already in state
+  }
+  try {
+    const res = await fetch("/api/stripe-config");
+    if (res.ok) {
+      const data = await res.json();
+      state.stripeEnabled = Boolean(data.enabled);
+      state.stripePublishableKey = data.publishableKey || "";
+    }
+  } catch {
+    // offline or API not running yet — stays disabled, test-mode flow still works
   }
   registerServiceWorker();
   setupInstallPrompt();
@@ -193,7 +257,6 @@ function viewHome() {
           <a href="#/locations" class="btn btn-secondary">Find the Stand</a>
         </div>
       </div>
-      ${burgerArt()}
     </div>
   </section>
 
@@ -201,13 +264,10 @@ function viewHome() {
     <div class="container">
       <div class="section-head">
         <div>
-          <h2 class="h-display">Catch us on the road</h2>
-          <p>We're a mobile stand — no fixed address yet, so the schedule moves week to week.</p>
+          <h2 class="h-display">Visit Us</h2>
+          <p>Three locations around Cleveland.</p>
         </div>
-        <a href="#/locations" class="btn btn-dark">Full Schedule &amp; Alerts</a>
-      </div>
-      <div id="homeLocationsPreview">
-        <p style="color:var(--steel);">Loading this week's stops…</p>
+        <a href="#/locations" class="btn btn-dark">All Locations</a>
       </div>
     </div>
   </section>
@@ -266,40 +326,6 @@ function viewHome() {
       </div>
     </div>
   </section>`;
-}
-
-function burgerArt() {
-  return `
-  <svg class="burger-art" viewBox="0 0 420 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Illustration of a smash burger cross-section on a grill grate">
-    <defs>
-      <pattern id="grate" width="40" height="40" patternUnits="userSpaceOnUse">
-        <rect width="40" height="40" fill="#241d16"/>
-        <rect y="16" width="40" height="8" fill="#2f261b"/>
-      </pattern>
-    </defs>
-    <rect x="0" y="230" width="420" height="130" fill="url(#grate)"/>
-    <ellipse cx="210" cy="255" rx="150" ry="16" fill="#0f0c08" opacity="0.5"/>
-    <!-- bottom bun -->
-    <path d="M90 250 q120 -26 240 0 v18 q-120 20 -240 0 z" fill="#d99a4e"/>
-    <!-- patty -->
-    <rect x="85" y="210" width="252" height="30" rx="6" fill="#5c3420"/>
-    <rect x="95" y="214" width="232" height="8" rx="4" fill="#7a4a2c" opacity="0.7"/>
-    <!-- cheese drape -->
-    <path d="M80 214 l30 -14 l30 14 l30 -14 l30 14 l30 -14 l30 14 l30 -14 l30 14 v10 h-260 z" fill="#e8a33d"/>
-    <!-- pickles -->
-    <circle cx="140" cy="204" r="7" fill="#6e7b3f"/>
-    <circle cx="200" cy="200" r="7" fill="#6e7b3f"/>
-    <circle cx="270" cy="205" r="7" fill="#6e7b3f"/>
-    <!-- top bun -->
-    <path d="M75 195 q135 -80 270 0 q10 5 5 16 h-280 q-5 -11 5 -16 z" fill="#e3a84f"/>
-    <path d="M75 195 q135 -80 270 0" fill="none" stroke="#c98a35" stroke-width="3"/>
-    <circle cx="160" cy="150" r="3" fill="#f6e9d8"/>
-    <circle cx="190" cy="140" r="3" fill="#f6e9d8"/>
-    <circle cx="225" cy="138" r="3" fill="#f6e9d8"/>
-    <circle cx="255" cy="145" r="3" fill="#f6e9d8"/>
-    <circle cx="145" cy="165" r="3" fill="#f6e9d8"/>
-    <circle cx="280" cy="160" r="3" fill="#f6e9d8"/>
-  </svg>`;
 }
 
 function stepper(activeIndex) {
@@ -415,6 +441,14 @@ function viewCheckout() {
           <div id="checkoutError"></div>
 
           <form id="checkoutForm" class="form-card" novalidate>
+            <div class="field">
+              <label for="pickupLocation">Pickup location</label>
+              <select id="pickupLocation" required>
+                <option value="" disabled selected>Choose a location…</option>
+                ${state.locations.map(loc => `<option value="${loc.id}">${loc.name} — ${loc.address}</option>`).join('')}
+              </select>
+            </div>
+
             <div class="fulfil-toggle">
               <button type="button" class="active" data-fulfil="pickup">Pickup — ~15 min</button>
               <button type="button" data-fulfil="later">Schedule for later today</button>
@@ -448,6 +482,8 @@ function viewCheckout() {
 
             <button type="submit" class="btn btn-primary btn-block">Place Order — ~${money(cartSubtotal() * 1.08)}</button>
           </form>
+
+          <div id="stripeCheckoutContainer" style="display:none; margin-top:20px;"></div>
         </div>
         <div class="ticket-col">
           ${ticket({ showCheckoutBtn: false })}
@@ -495,6 +531,7 @@ function renderOrderConfirmedDetail(order) {
 
       <div class="confirm-detail-card">
         <div class="row"><span>Name</span><span>${order.customer.name}</span></div>
+        ${order.location ? `<div class="row"><span>Pickup at</span><span>${order.location.name} — ${order.location.address}</span></div>` : ''}
         <div class="row"><span>Items</span><span>${order.items.reduce((n,i)=>n+i.qty,0)}</span></div>
         <div class="row"><span>Fulfillment</span><span>${order.fulfillment === 'pickup' ? 'Pickup ASAP (~15 min)' : 'Scheduled pickup'}</span></div>
         <div class="row"><span>Total</span><span>${money(order.total)}</span></div>
@@ -629,6 +666,8 @@ function viewCateringBook() {
         <button type="submit" class="btn btn-primary btn-block">Book &amp; Pay — ~<span id="cSubmitTotal">$${(pkg.pricePerPerson * pkg.minHeadcount).toFixed(2)}</span></button>
       </form>
 
+      <div id="stripeCheckoutContainer" style="display:none; margin-top:20px;"></div>
+
       <p style="margin-top:14px; font-size:0.85rem; color:var(--steel);">
         Trouble with this booking? <a href="tel:+12165550142" style="color:var(--crust);">Call (216) 555-0142</a> and we'll sort it out.
       </p>
@@ -725,63 +764,6 @@ function viewKitchen() {
       <div id="kitchenBoard">
         <p style="color:var(--steel);">Loading…</p>
       </div>
-
-      <div class="section-head" style="margin-top:56px;">
-        <div>
-          <h2 class="h-display">Pop-Up Schedule</h2>
-          <p>Add or remove stops. Subscribers can be alerted per stop once it's posted.</p>
-        </div>
-      </div>
-
-      <div id="kitchenAddStopError"></div>
-      <form id="kitchenAddStopForm" class="form-card" style="margin-bottom:28px;" novalidate>
-        <div class="field-row">
-          <div class="field">
-            <label for="stopDate">Date</label>
-            <input type="date" id="stopDate" required>
-          </div>
-          <div class="field">
-            <label for="stopType">Type</label>
-            <select id="stopType">
-              <option value="weekly">Weekly stop</option>
-              <option value="event">Pop-up event</option>
-            </select>
-          </div>
-        </div>
-        <div class="field-row">
-          <div class="field">
-            <label for="stopStart">Start time</label>
-            <input type="time" id="stopStart">
-          </div>
-          <div class="field">
-            <label for="stopEnd">End time</label>
-            <input type="time" id="stopEnd">
-          </div>
-        </div>
-        <div class="field">
-          <label for="stopName">Stop name</label>
-          <input type="text" id="stopName" required placeholder="Ohio City — W 25th & Lorain">
-        </div>
-        <div class="field-row">
-          <div class="field">
-            <label for="stopAddress">Address</label>
-            <input type="text" id="stopAddress" required placeholder="W 25th St & Lorain Ave, Cleveland, OH">
-          </div>
-          <div class="field">
-            <label for="stopZip">Zip <span class="hint">(for "near you" alerts)</span></label>
-            <input type="text" id="stopZip" inputmode="numeric" maxlength="5" placeholder="44113">
-          </div>
-        </div>
-        <div class="field">
-          <label for="stopNotes">Notes <span class="hint">(optional)</span></label>
-          <input type="text" id="stopNotes" placeholder="Live music night, dinner service only, etc.">
-        </div>
-        <button type="submit" class="btn btn-primary btn-block">Add Stop</button>
-      </form>
-
-      <div id="kitchenSchedule">
-        <p style="color:var(--steel);">Loading schedule…</p>
-      </div>
     </div>
   </section>`;
 }
@@ -807,6 +789,7 @@ function renderKitchenBoard(orders, cateringRequests, cloverEnabled) {
             <strong>${o.ref}</strong> ${statusBadge(o.status)}
           </div>
           <div class="kitchen-card-body">
+            ${o.location ? `<div style="font-weight:700; color:var(--crust);">${o.location.name}</div>` : ''}
             <div>${o.customer.name} · ${o.customer.phone}</div>
             <div>${o.items.reduce((n,i)=>n+i.qty,0)} items · ${money(o.total)}</div>
             <div style="color:var(--steel); font-size:0.8rem;">${new Date(o.createdAt).toLocaleString()}</div>
@@ -866,14 +849,12 @@ function startKitchenPolling() {
   const load = async () => {
     const passcode = localStorage.getItem("csb_kitchen_passcode") || "";
     try {
-      const [ordersRes, cateringRes, locationsRes, alertsRes, cloverRes] = await Promise.all([
+      const [ordersRes, cateringRes, cloverRes] = await Promise.all([
         fetch("/api/orders", { headers: { "x-kitchen-passcode": passcode } }),
         fetch("/api/catering", { headers: { "x-kitchen-passcode": passcode } }),
-        fetch("/api/locations"),
-        fetch("/api/alerts", { headers: { "x-kitchen-passcode": passcode } }),
         fetch("/api/clover/status", { headers: { "x-kitchen-passcode": passcode } }),
       ]);
-      if (ordersRes.status === 401 || cateringRes.status === 401 || alertsRes.status === 401) {
+      if (ordersRes.status === 401 || cateringRes.status === 401) {
         state.kitchenAuthed = false;
         clearInterval(kitchenPollTimer);
         render();
@@ -881,17 +862,11 @@ function startKitchenPolling() {
       }
       const ordersData = await ordersRes.json();
       const cateringData = await cateringRes.json();
-      const locationsData = await locationsRes.json();
-      const alertsData = await alertsRes.json();
       const cloverData = await cloverRes.json().catch(() => ({ enabled: false }));
 
       const board = document.getElementById("kitchenBoard");
       if (board) board.innerHTML = renderKitchenBoard(ordersData.orders || [], cateringData.requests || [], Boolean(cloverData.enabled));
       attachKitchenStatusHandlers();
-
-      const schedule = document.getElementById("kitchenSchedule");
-      if (schedule) schedule.innerHTML = renderKitchenSchedule(locationsData.locations || [], alertsData.signups || []);
-      attachKitchenScheduleHandlers();
     } catch {
       // transient network hiccup — next poll will retry
     }
@@ -963,65 +938,7 @@ function attachKitchenStatusHandlers() {
   });
 }
 
-// ---------------- Locations / pop-up schedule ----------------
-
-function todayISO() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function upcomingStops(locations, limit) {
-  const today = todayISO();
-  const upcoming = locations
-    .filter(l => l.date >= today)
-    .sort((a, b) => `${a.date}${a.startTime || ""}`.localeCompare(`${b.date}${b.startTime || ""}`));
-  return limit ? upcoming.slice(0, limit) : upcoming;
-}
-
-function formatStopDate(dateStr) {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const date = new Date(y, m - 1, d);
-  const isToday = dateStr === todayISO();
-  const label = date.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
-  return isToday ? `Today — ${label}` : label;
-}
-
-function stopTypeBadge(type) {
-  return type === "event"
-    ? `<span class="status-badge" style="background:var(--crust); color:#fff;">pop-up event</span>`
-    : `<span class="status-badge" style="background:#e2e2e2; color:#2b2b2b;">weekly stop</span>`;
-}
-
-function renderStopRow(loc, opts = {}) {
-  const time = loc.startTime ? `${loc.startTime}${loc.endTime ? `–${loc.endTime}` : ""}` : "";
-  return `
-  <div class="menu-row" style="grid-template-columns:1fr auto;">
-    <div>
-      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:4px;">
-        <h3 style="margin:0;">${loc.name}</h3>
-        ${stopTypeBadge(loc.type)}
-      </div>
-      <p style="margin:0 0 4px;">${loc.address}</p>
-      <p style="margin:0; color:var(--steel); font-size:0.85rem;">${formatStopDate(loc.date)}${time ? ` · ${time}` : ""}</p>
-      ${loc.notes ? `<p style="margin:6px 0 0; font-size:0.88rem;">${loc.notes}</p>` : ""}
-    </div>
-    ${opts.showDirections !== false ? `
-    <a class="btn btn-dark btn-sm" style="align-self:center;" target="_blank" rel="noopener"
-       href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.address)}">Directions</a>
-    ` : ""}
-  </div>`;
-}
-
-function renderSchedulePreview(locations) {
-  const stops = upcomingStops(locations, 3);
-  const el = document.getElementById("homeLocationsPreview");
-  if (!el) return;
-  if (stops.length === 0) {
-    el.innerHTML = `<p style="color:var(--steel);">No stops posted yet — check back soon, or sign up below to get an alert the moment one goes up.</p>`;
-    return;
-  }
-  el.innerHTML = `<div class="menu-board">${stops.map(l => renderStopRow(l)).join('')}</div>`;
-}
+// ---------------- Locations ----------------
 
 function viewLocations() {
   return `
@@ -1029,162 +946,38 @@ function viewLocations() {
     <div class="container">
       <div class="section-head">
         <div>
-          <h2 class="h-display">Find the Stand</h2>
-          <p>We're a mobile stand, so the spot changes — this list is always current. No location posted yet? Sign up below and we'll text or email you the second one goes up.</p>
+          <h2 class="h-display">Our Locations</h2>
+          <p>Three spots around Cleveland — stop by any of them.</p>
         </div>
       </div>
-
-      <div id="nextStopCallout"></div>
-
-      <div id="fullSchedule" style="margin:32px 0 48px;">
-        <p style="color:var(--steel);">Loading schedule…</p>
-      </div>
-
-      <div class="section-head">
-        <div>
-          <h2 class="h-display">Get a Text When We're Near You</h2>
-          <p>Drop your zip and we'll alert you the moment a new stop is posted nearby. No spam — just pop-up locations.</p>
-        </div>
-      </div>
-
-      <div id="alertSignupMsg"></div>
-
-      <form id="alertSignupForm" class="form-card" style="max-width:520px;" novalidate>
-        <div class="field">
-          <label for="alertName">Name <span class="hint">(optional)</span></label>
-          <input type="text" id="alertName" placeholder="Jordan Smith">
-        </div>
-        <div class="field-row">
-          <div class="field">
-            <label for="alertEmail">Email <span class="hint">(optional if phone given)</span></label>
-            <input type="email" id="alertEmail" placeholder="you@example.com">
-          </div>
-          <div class="field">
-            <label for="alertPhone">Phone <span class="hint">(optional if email given)</span></label>
-            <input type="tel" id="alertPhone" placeholder="(216) 555-0100">
-          </div>
-        </div>
-        <div class="field">
-          <label for="alertZip">Zip code</label>
-          <input type="text" id="alertZip" inputmode="numeric" maxlength="5" placeholder="44113" required>
-        </div>
-        <button type="submit" class="btn btn-primary btn-block">Sign Up for Alerts</button>
-      </form>
-
-      <p style="margin-top:14px; font-size:0.85rem; color:var(--steel);">
-        Already signed up and want out? <a href="#" id="unsubscribeToggle" style="color:var(--crust);">Unsubscribe here</a>.
-      </p>
-      <div id="unsubscribeBox" style="display:none; max-width:520px; margin-top:14px;">
-        <div class="form-card">
-          <div class="field">
-            <label for="unsubContact">Email or phone you signed up with</label>
-            <input type="text" id="unsubContact" placeholder="you@example.com or (216) 555-0100">
-          </div>
-          <button type="button" id="unsubscribeBtn" class="btn btn-dark btn-block">Unsubscribe</button>
-          <div id="unsubscribeMsg"></div>
-        </div>
+      <div id="locationsList">
+        <p style="color:var(--steel);">Loading…</p>
       </div>
     </div>
   </section>`;
 }
 
-function renderNextStopCallout(locations) {
-  const el = document.getElementById("nextStopCallout");
-  if (!el) return;
-  const stops = upcomingStops(locations, 1);
-  if (stops.length === 0) {
-    el.innerHTML = `
-    <div class="install-card">
-      <div>
-        <p style="margin:0; font-size:0.95rem;">Nothing posted yet — sign up below and we'll alert you the moment a new stop goes up.</p>
-      </div>
-    </div>`;
-    return;
-  }
-  const next = stops[0];
-  const isToday = next.date === todayISO();
-  el.innerHTML = `
-  <div class="install-card">
-    <div class="qr" style="background:var(--crust); color:#fff;">${isToday ? "HAPPENING<br>TODAY" : "NEXT<br>STOP"}</div>
+function renderLocationCard(loc) {
+  return `
+  <div class="menu-row" style="grid-template-columns:1fr auto;">
     <div>
-      ${renderStopRow(next)}
+      <h3 style="margin:0 0 4px;">${loc.name}</h3>
+      <p style="margin:0 0 4px;">${loc.address}</p>
+      <p style="margin:0; color:var(--steel); font-size:0.85rem;">${loc.hours}${loc.phone ? ` · ${loc.phone}` : ''}</p>
     </div>
+    <a class="btn btn-dark btn-sm" style="align-self:center;" target="_blank" rel="noopener"
+       href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.address)}">Directions</a>
   </div>`;
 }
 
-function renderFullSchedule(locations) {
-  const el = document.getElementById("fullSchedule");
+function renderLocationsList(locations) {
+  const el = document.getElementById("locationsList");
   if (!el) return;
-  const stops = upcomingStops(locations);
-  if (stops.length === 0) {
-    el.innerHTML = `<p style="color:var(--steel);">No upcoming stops posted right now.</p>`;
+  if (locations.length === 0) {
+    el.innerHTML = `<p style="color:var(--steel);">Location info isn't available right now — please call us.</p>`;
     return;
   }
-  el.innerHTML = `<div class="menu-board">${stops.map(l => renderStopRow(l)).join('')}</div>`;
-}
-
-function renderKitchenSchedule(locations, alerts) {
-  const stops = [...locations].sort((a, b) => `${a.date}${a.startTime || ""}`.localeCompare(`${b.date}${b.startTime || ""}`));
-  return `
-  <p style="color:var(--steel); font-size:0.85rem; margin-bottom:14px;">${alerts.length} subscriber${alerts.length === 1 ? '' : 's'} signed up for alerts.</p>
-  ${stops.length === 0 ? '<p style="color:var(--steel);">No stops posted yet.</p>' : stops.map(loc => `
-    <div class="kitchen-card">
-      <div class="kitchen-card-head">
-        <strong>${loc.name}</strong> ${stopTypeBadge(loc.type)}
-      </div>
-      <div class="kitchen-card-body">
-        <div>${loc.address}${loc.zip ? ` · ${loc.zip}` : ''}</div>
-        <div>${formatStopDate(loc.date)}${loc.startTime ? ` · ${loc.startTime}${loc.endTime ? `–${loc.endTime}` : ''}` : ''}</div>
-        ${loc.notes ? `<div>${loc.notes}</div>` : ''}
-        <div style="color:var(--steel); font-size:0.8rem;">${loc.notifiedAt ? `Alerted subscribers ${new Date(loc.notifiedAt).toLocaleString()}` : 'Not yet alerted'}</div>
-      </div>
-      <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button class="btn btn-dark btn-sm" data-notify-stop="${loc.id}" data-near="${loc.zip ? '1' : '0'}">
-          ${loc.zip ? 'Notify Nearby' : 'Notify Everyone'}
-        </button>
-        <button class="btn btn-secondary btn-sm" style="color:var(--ink); border-color:var(--steel);" data-delete-stop="${loc.id}">Remove</button>
-      </div>
-    </div>
-  `).join('')}`;
-}
-
-function attachKitchenScheduleHandlers() {
-  document.querySelectorAll("[data-notify-stop]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const passcode = localStorage.getItem("csb_kitchen_passcode") || "";
-      const nearOnly = btn.dataset.near === "1";
-      btn.disabled = true;
-      try {
-        const res = await fetch(`/api/locations/${btn.dataset.notifyStop}/notify`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-kitchen-passcode": passcode },
-          body: JSON.stringify({ nearOnly }),
-        });
-        const data = await res.json();
-        showToast(res.ok ? `Alerted ${data.notified} of ${data.of} subscribers` : (data.error || "Couldn't send alerts"));
-      } catch {
-        showToast("Couldn't send alerts — try again.");
-      }
-      btn.disabled = false;
-    });
-  });
-
-  document.querySelectorAll("[data-delete-stop]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const passcode = localStorage.getItem("csb_kitchen_passcode") || "";
-      btn.disabled = true;
-      try {
-        await fetch(`/api/locations/${btn.dataset.deleteStop}`, {
-          method: "DELETE",
-          headers: { "x-kitchen-passcode": passcode },
-        });
-        showToast("Stop removed");
-      } catch {
-        showToast("Couldn't remove that stop — try again.");
-      }
-      btn.disabled = false;
-    });
-  });
+  el.innerHTML = `<div class="menu-board">${locations.map(renderLocationCard).join('')}</div>`;
 }
 
 // ---------------- Render ----------------
@@ -1231,101 +1024,11 @@ function attachHandlers(route) {
     if (el) el.addEventListener("click", (e) => { e.preventDefault(); triggerInstall(); });
   });
 
-  if (route === "home") {
-    fetch("/api/locations")
-      .then(r => r.json())
-      .then(data => renderSchedulePreview(data.locations || []))
-      .catch(() => {
-        const el = document.getElementById("homeLocationsPreview");
-        if (el) el.innerHTML = `<p style="color:var(--steel);">Couldn't load the schedule right now.</p>`;
-      });
-  }
-
   if (route === "locations") {
     fetch("/api/locations")
       .then(r => r.json())
-      .then(data => {
-        const locations = data.locations || [];
-        renderNextStopCallout(locations);
-        renderFullSchedule(locations);
-      })
-      .catch(() => {
-        const el = document.getElementById("fullSchedule");
-        if (el) el.innerHTML = `<p style="color:var(--steel);">Couldn't load the schedule right now.</p>`;
-      });
-
-    document.getElementById("alertSignupForm").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const msgBox = document.getElementById("alertSignupMsg");
-      msgBox.innerHTML = "";
-
-      const payload = {
-        name: document.getElementById("alertName").value.trim(),
-        email: document.getElementById("alertEmail").value.trim(),
-        phone: document.getElementById("alertPhone").value.trim(),
-        zip: document.getElementById("alertZip").value.trim(),
-      };
-
-      if (!payload.zip) {
-        msgBox.innerHTML = `<div class="form-error-banner">Add a zip code so we know where "near you" means.</div>`;
-        return;
-      }
-      if (!payload.email && !payload.phone) {
-        msgBox.innerHTML = `<div class="form-error-banner">Add an email or phone number so we can actually reach you.</div>`;
-        return;
-      }
-
-      const submitBtn = e.target.querySelector("button[type=submit]");
-      submitBtn.disabled = true;
-      submitBtn.textContent = "Signing up…";
-
-      try {
-        const res = await fetch("/api/alerts/subscribe", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Something went wrong.");
-        e.target.reset();
-        msgBox.innerHTML = `<div class="confirm-detail-card" style="border-color:var(--crust);"><strong>You're in!</strong> We'll text or email you when a new stop goes up near ${payload.zip}.</div>`;
-      } catch (err) {
-        msgBox.innerHTML = `<div class="form-error-banner">${err.message}</div>`;
-      } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = "Sign Up for Alerts";
-      }
-    });
-
-    document.getElementById("unsubscribeToggle").addEventListener("click", (e) => {
-      e.preventDefault();
-      const box = document.getElementById("unsubscribeBox");
-      box.style.display = box.style.display === "none" ? "block" : "none";
-    });
-
-    document.getElementById("unsubscribeBtn").addEventListener("click", async () => {
-      const raw = document.getElementById("unsubContact").value.trim();
-      const msgBox = document.getElementById("unsubscribeMsg");
-      msgBox.innerHTML = "";
-      if (!raw) {
-        msgBox.innerHTML = `<div class="form-error-banner">Enter the email or phone you signed up with.</div>`;
-        return;
-      }
-      const isEmail = raw.includes("@");
-      try {
-        const res = await fetch("/api/alerts/unsubscribe", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(isEmail ? { email: raw } : { phone: raw }),
-        });
-        const data = await res.json();
-        msgBox.innerHTML = data.removed > 0
-          ? `<p style="color:var(--steel); margin-top:10px;">You're unsubscribed.</p>`
-          : `<p style="color:var(--steel); margin-top:10px;">Didn't find a signup with that info.</p>`;
-      } catch {
-        msgBox.innerHTML = `<div class="form-error-banner">Something went wrong. Try again.</div>`;
-      }
-    });
+      .then(data => renderLocationsList(data.locations && data.locations.length ? data.locations : state.locations))
+      .catch(() => renderLocationsList(state.locations));
   }
 
   if (route === "checkout") {
@@ -1342,6 +1045,7 @@ function attachHandlers(route) {
 
     document.getElementById("checkoutForm").addEventListener("submit", async (e) => {
       e.preventDefault();
+      const locationId = document.getElementById("pickupLocation").value;
       const name = document.getElementById("name").value.trim();
       const phone = document.getElementById("phone").value.trim();
       const email = document.getElementById("email").value.trim();
@@ -1349,6 +1053,10 @@ function attachHandlers(route) {
       const errorBox = document.getElementById("checkoutError");
       errorBox.innerHTML = "";
 
+      if (!locationId) {
+        errorBox.innerHTML = `<div class="form-error-banner">Please choose a pickup location.</div>`;
+        return;
+      }
       if (!name || !phone) {
         errorBox.innerHTML = `<div class="form-error-banner">Please add your name and phone number so we can text you when it's ready.</div>`;
         return;
@@ -1357,6 +1065,7 @@ function attachHandlers(route) {
       const payload = {
         items: state.cart,
         customer: { name, phone, email },
+        locationId,
         fulfillment: state.fulfillment,
         notes,
       };
@@ -1374,10 +1083,12 @@ function attachHandlers(route) {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Something went wrong.");
 
-        if (data.checkoutUrl) {
-          // Real Stripe payment — leave the SPA for Stripe's hosted checkout.
-          // It'll redirect back to #/order-confirmed with a session_id.
-          window.location.href = data.checkoutUrl;
+        if (data.clientSecret) {
+          // Real Stripe payment — mount the payment form right here on
+          // the page instead of redirecting away. Stripe still redirects
+          // the browser to our return_url after a successful payment,
+          // landing back on #/order-confirmed with a session_id.
+          await mountEmbeddedCheckout(data.clientSecret, "stripeCheckoutContainer", e.target);
           return;
         }
 
@@ -1438,48 +1149,6 @@ function attachHandlers(route) {
       });
     } else {
       startKitchenPolling();
-
-      document.getElementById("kitchenAddStopForm").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const errorBox = document.getElementById("kitchenAddStopError");
-        errorBox.innerHTML = "";
-
-        const payload = {
-          date: document.getElementById("stopDate").value,
-          startTime: document.getElementById("stopStart").value,
-          endTime: document.getElementById("stopEnd").value,
-          name: document.getElementById("stopName").value.trim(),
-          address: document.getElementById("stopAddress").value.trim(),
-          zip: document.getElementById("stopZip").value.trim(),
-          notes: document.getElementById("stopNotes").value.trim(),
-          type: document.getElementById("stopType").value,
-        };
-
-        if (!payload.date || !payload.name || !payload.address) {
-          errorBox.innerHTML = `<div class="form-error-banner">Date, stop name, and address are required.</div>`;
-          return;
-        }
-
-        const passcode = localStorage.getItem("csb_kitchen_passcode") || "";
-        const submitBtn = e.target.querySelector("button[type=submit]");
-        submitBtn.disabled = true;
-
-        try {
-          const res = await fetch("/api/locations", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "x-kitchen-passcode": passcode },
-            body: JSON.stringify(payload),
-          });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || "Something went wrong.");
-          e.target.reset();
-          showToast("Stop added to the schedule");
-        } catch (err) {
-          errorBox.innerHTML = `<div class="form-error-banner">${err.message}</div>`;
-        } finally {
-          submitBtn.disabled = false;
-        }
-      });
     }
   }
 
@@ -1542,8 +1211,8 @@ function attachHandlers(route) {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Something went wrong.");
 
-        if (data.checkoutUrl) {
-          window.location.href = data.checkoutUrl;
+        if (data.clientSecret) {
+          await mountEmbeddedCheckout(data.clientSecret, "stripeCheckoutContainer", e.target);
           return;
         }
 

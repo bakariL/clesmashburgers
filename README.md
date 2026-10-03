@@ -6,7 +6,7 @@ plus a "download the app" experience that installs the site itself as
 an app (no App Store needed).
 
 It also has real (optional) **payments**, **SMS/email confirmations**,
-a **kitchen dashboard**, a **pop-up location schedule with alerts**, and
+a **kitchen dashboard**, a **Clover POS integration**, and
 a **safer data store** — see "The four extensions" below.
 
 ## Stack, and why
@@ -48,20 +48,29 @@ repo are already set up for it — no code changes needed).
 
 ### 1. Payments (Stripe)
 
-Both **ordering** and **catering booking** create a real Stripe Checkout
-Session when configured. Add a test-mode secret key to a `.env` file
-(copy `.env.example` → `.env`):
+Both **ordering** and **catering booking** use a real Stripe Checkout
+Session when configured — and the payment form (card entry, Apple Pay,
+Google Pay) is **embedded directly in the page**, not a redirect to a
+separate Stripe-hosted site. Add both keys to a `.env` file (copy
+`.env.example` → `.env`):
 
 ```
 STRIPE_SECRET_KEY=sk_test_...
+STRIPE_PUBLISHABLE_KEY=pk_test_...
 ```
 
-With that set, "Place Order" and "Book & Pay" redirect to Stripe's
-hosted payment page; after paying, Stripe redirects back and the server
-verifies the payment before marking the order/booking confirmed and
-sending confirmations. **Without** a key set, checkout skips straight
-to test mode: paid immediately, no card charged, everything else
-behaves the same — so you can build/demo the rest of the app with zero
+Get both from the same Dashboard page. The secret key stays
+server-side only; the publishable key is Stripe's own public-safe key,
+sent to the browser so it can load Stripe.js and mount the payment
+form.
+
+With both set, clicking "Place Order" or "Book & Pay" hides the form
+and mounts Stripe's real payment UI right there on the page. After a
+successful payment, Stripe redirects the browser back to your
+confirmation page, where the server verifies the payment and marks the
+order/booking confirmed. **Without** a secret key set, checkout skips
+straight to test mode: paid immediately, no card charged, no payment
+UI shown at all — so you can build/demo the rest of the app with zero
 Stripe setup.
 
 If the Stripe API call fails for any reason (bad key, no network), the
@@ -184,39 +193,27 @@ hiccup never blocks a sale. It's just recorded as unsynced
 order's card, so staff can push it again with one click, or just take
 the order manually from what's already on the board.
 
-## Pop-up locations & alerts
+## Locations
 
-Since you run out of a mobile stand with no fixed address, there's now
-a **`/#/locations`** page ("Find Us" in the nav) built around that:
+Three fixed storefronts, shown on a simple **`/#/locations`** page
+("Find Us" in the nav) — name, address, hours, phone, and a
+*Directions* button straight to Google Maps for each. The list is a
+plain constant (`LOCATIONS`) near the top of `server.js`, served via
+`GET /api/locations` — the same pattern as `MENU` and
+`CATERING_PACKAGES`. To add, remove, or edit a location (address,
+hours, phone), that's the one place to touch; there's no database or
+kitchen-board management UI for this since it's not something that
+changes often.
 
-- A "Next Stop" callout that surfaces whichever pop-up is coming up
-  soonest (and says "Happening Today" if it is).
-- The full upcoming schedule — date, time, address, a *Directions*
-  button straight to Google Maps, and a badge for **weekly stop** vs
-  **pop-up event**.
-- A sign-up form: name (optional), email and/or phone, and a zip code
-  so "near you" alerts mean something. Subscribing sends a real
-  confirmation text/email (or logs it in test mode, same as
-  orders/catering).
-- A working unsubscribe flow, by email or phone.
-- The homepage shows a live preview of the next few stops too.
-
-**Managing the schedule** happens from the kitchen board
-(`/#/kitchen`), since that's real day-to-day operations, not a one-time
-setup:
-
-- Add a stop (date, time, name, address, zip, notes, weekly vs. event).
-- Each stop gets a **Notify Nearby / Notify Everyone** button — press
-  it and every subscriber (optionally filtered to the same zip-code
-  area as the stop) gets a text/email automatically.
-- Remove old stops. Subscriber count is shown at the top.
-
-The "near you" filtering is a simple zip-prefix match (same first 3
-digits), not real distance — there's no geocoding API wired in. It's a
-reasonable proxy for a Cleveland-area zip cluster, and documented here
-so it's not a silent limitation: if you want actual mile-radius
-matching later, that's where a Google Maps/Mapbox geocoding call would
-slot in (see "What's still worth extending" below).
+**Checkout requires picking one.** Since all 3 locations share a
+single Clover account (per the business — confirm this is still true
+if that ever changes, since it affects how orders route), the pickup
+location is stored on the order, shown on the confirmation page,
+mentioned in the SMS/email, and — importantly — put first and in
+caps in the note sent to Clover (`PICKUP AT: PARMA`, etc.), since
+that's the only thing telling staff at a given store whether an order
+on the shared register is theirs. It's also shown on each order's
+card on the kitchen board.
 
 ## What's in here
 
@@ -230,11 +227,9 @@ env.js                    Tiny .env file loader (no dependency)
 .env.example              Every optional setting, documented
 data/orders.json          Orders land here
 data/catering.json        Catering requests land here
-data/locations.json       Pop-up schedule stops land here
-data/alerts.json          Location-alert subscribers land here
 public/
   index.html               App shell
-  app.js                    Frontend logic (router, cart, forms, schedule, kitchen board, PWA install)
+  app.js                    Frontend logic (router, cart, forms, kitchen board, PWA install)
   styles.css                Design system (colors, type, components)
   manifest.webmanifest      Makes the site installable
   sw.js                     Service worker (offline app-shell caching)
@@ -245,8 +240,9 @@ public/
 
 **Ordering:** Home → *Order Now* → add items → *Continue to Details* →
 name + phone → *Place Order*. In test mode you land straight on a
-confirmation with a `CSB-XXXX` code; with Stripe configured you're sent
-to a real payment page first.
+confirmation with a `CSB-XXXX` code; with Stripe configured, the
+payment form (card / Apple Pay / Google Pay) loads right there on the
+page instead.
 
 **Catering:** Home → *Cater Your Event* → pick a package → enter
 headcount (total updates live) + date + address + contact info →
@@ -254,16 +250,13 @@ headcount (total updates live) + date + address + contact info →
 booking trouble is pointed to a phone number — there's no separate
 "request a quote" form anymore.
 
-**Find the Stand:** `/#/locations` → sign up with a zip code → go to
-`/#/kitchen` and add a stop with that same zip → hit *Notify Nearby* →
-check the terminal (or your phone/inbox, if Twilio/Resend are
-configured) for the alert.
+**Find Us:** `/#/locations` → see the 3 storefronts, each with a
+*Directions* button straight to Google Maps.
 
 **Kitchen board:** `/#/kitchen` → enter the passcode if you set one →
 watch orders/catering requests appear as you submit them, try changing
-a status dropdown, add/remove/notify pop-up stops, and (if
-`CLOVER_MERCHANT_ID`/`CLOVER_API_TOKEN` are set) check that each order
-shows "✓ Synced to Clover."
+a status dropdown, and (if `CLOVER_MERCHANT_ID`/`CLOVER_API_TOKEN` are
+set) check that each order shows "✓ Synced to Clover."
 
 **Install the app:** *Get the App* in the nav. Real install prompt on
 Chrome/Edge/Android; "Add to Home Screen" instructions on iOS Safari.
@@ -290,10 +283,6 @@ Chrome/Edge/Android; "Add to Home Screen" instructions on iOS Safari.
 6. **True native app**, if push notifications or deeper device
    integration matter later — React Native or Capacitor could reuse the
    same API unchanged.
-7. **Real geocoding for alerts.** "Notify Nearby" currently matches on
-   the first 3 digits of a zip code — a reasonable proxy for Cleveland,
-   but a real mile-radius match needs a geocoding API (Google Maps or
-   Mapbox) to convert zips/addresses to coordinates first.
 
 ## Design notes
 

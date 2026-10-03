@@ -58,8 +58,6 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
 const ordersStore = new JSONStore(path.join(DATA_DIR, "orders.json"));
 const cateringStore = new JSONStore(path.join(DATA_DIR, "catering.json"));
-const locationsStore = new JSONStore(path.join(DATA_DIR, "locations.json"));
-const alertsStore = new JSONStore(path.join(DATA_DIR, "alerts.json"));
 
 // ---- Orders ----
 
@@ -113,66 +111,6 @@ function getCateringRequests() {
   return cateringStore.read();
 }
 
-// ---- Pop-up locations / schedule ----
-
-function createLocation(location) {
-  return locationsStore.mutate((data) => {
-    data.push(location);
-    data.sort((a, b) => `${a.date}${a.startTime || ""}`.localeCompare(`${b.date}${b.startTime || ""}`));
-    return location;
-  });
-}
-
-function updateLocation(id, patch) {
-  return locationsStore.mutate((data) => {
-    const loc = data.find((l) => l.id === id);
-    if (!loc) return null;
-    Object.assign(loc, patch, { updatedAt: new Date().toISOString() });
-    data.sort((a, b) => `${a.date}${a.startTime || ""}`.localeCompare(`${b.date}${b.startTime || ""}`));
-    return loc;
-  });
-}
-
-function deleteLocation(id) {
-  return locationsStore.mutate((data) => {
-    const idx = data.findIndex((l) => l.id === id);
-    if (idx === -1) return false;
-    data.splice(idx, 1);
-    return true;
-  });
-}
-
-function getLocations() {
-  return locationsStore.read();
-}
-
-// ---- Alert subscribers ----
-
-function createAlertSignup(signup) {
-  return alertsStore.mutate((data) => {
-    data.unshift(signup);
-    return signup;
-  });
-}
-
-function removeAlertSignupsByContact({ email, phone }) {
-  return alertsStore.mutate((data) => {
-    const before = data.length;
-    const remaining = data.filter((s) => {
-      const emailMatch = email && s.email && s.email.toLowerCase() === email.toLowerCase();
-      const phoneMatch = phone && s.phone && s.phone === phone;
-      return !(emailMatch || phoneMatch);
-    });
-    data.length = 0;
-    data.push(...remaining);
-    return before - remaining.length;
-  });
-}
-
-function getAlertSignups() {
-  return alertsStore.read();
-}
-
 module.exports = {
   createOrder,
   updateOrder,
@@ -182,11 +120,4 @@ module.exports = {
   updateCateringRequest,
   getCateringRequest,
   getCateringRequests,
-  createLocation,
-  updateLocation,
-  deleteLocation,
-  getLocations,
-  createAlertSignup,
-  removeAlertSignupsByContact,
-  getAlertSignups,
 };

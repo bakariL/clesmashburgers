@@ -10,6 +10,13 @@ function isStripeConfigured() {
   return Boolean(STRIPE_SECRET_KEY());
 }
 
+// Publishable keys are designed by Stripe to be public — safe to send to
+// the browser, unlike the secret key. The frontend needs it to load
+// Stripe.js and mount the embedded payment form.
+function getPublishableKey() {
+  return process.env.STRIPE_PUBLISHABLE_KEY || "";
+}
+
 async function stripePost(pathname, params) {
   const res = await fetch(`https://api.stripe.com/v1/${pathname}`, {
     method: "POST",
@@ -33,8 +40,8 @@ async function stripeGet(pathname) {
   return data;
 }
 
-// Builds a Stripe-hosted Checkout Session from a plain list of line items
-// and returns it. Generic on purpose — both the order flow and the
+// Builds an Embedded Stripe Checkout Session from a plain list of line
+// items and returns it. Generic on purpose — both the order flow and the
 // catering flow call this with their own line items.
 //
 // lineItems: [{ name, unitAmountCents, quantity, taxCode }]
@@ -42,14 +49,21 @@ async function stripeGet(pathname) {
 //   "Food for Immediate Consumption") — optional per line item; omit it
 //   and Stripe falls back to whatever default tax code is set in your
 //   Dashboard under Tax settings, if any.
-// successUrl / cancelUrl: full URLs, e.g. from buildRedirectUrls() below
+// returnUrl: where Stripe sends the browser after the payment attempt —
+//   include the literal string "{CHECKOUT_SESSION_ID}" and Stripe
+//   substitutes the real session id before redirecting.
 // customerEmail: optional, prefills Stripe's checkout email field
 // metadata: optional flat { key: "value" } object, stored on the session
-async function createCheckoutSession({ lineItems, successUrl, cancelUrl, customerEmail, metadata }) {
+//
+// ui_mode "embedded" means the payment form (card entry, Apple Pay,
+// Google Pay) mounts directly inside our own page via Stripe.js —
+// the customer never leaves the site. The response's client_secret is
+// what the frontend uses to mount it (see public/app.js).
+async function createCheckoutSession({ lineItems, returnUrl, customerEmail, metadata }) {
   const params = {
     mode: "payment",
-    success_url: successUrl,
-    cancel_url: cancelUrl,
+    ui_mode: "embedded",
+    return_url: returnUrl,
     // Stripe Tax: calculates real tax once you have an active tax
     // registration for the customer's jurisdiction (Dashboard → Tax →
     // Registrations). Returns $0 tax — not an error — until you do.
@@ -92,4 +106,4 @@ async function retrieveCheckoutSession(sessionId) {
 // advice if you want catering classified separately.
 const FOOD_TAX_CODE = "txcd_40060003";
 
-module.exports = { isStripeConfigured, createCheckoutSession, retrieveCheckoutSession, FOOD_TAX_CODE };
+module.exports = { isStripeConfigured, getPublishableKey, createCheckoutSession, retrieveCheckoutSession, FOOD_TAX_CODE };
