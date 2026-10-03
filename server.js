@@ -250,6 +250,36 @@ async function pushCateringToClover(booking) {
   }
 }
 
+// We only do one catering event per day. A date is unavailable if either
+// a non-canceled booking already has it, or staff manually blocked it
+// (closed, already promised verbally, prepping for something else, etc.).
+async function isDateAvailable(date, { ignoreRef } = {}) {
+  const [bookings, blocked] = await Promise.all([db.getCateringRequests(), db.getBlockedDates()]);
+  const bookingConflict = bookings.some(
+    (b) => b.eventDate === date && b.status !== "canceled" && b.ref !== ignoreRef
+  );
+  const manuallyBlocked = blocked.some((b) => b.date === date);
+  return !bookingConflict && !manuallyBlocked;
+}
+
+// Public version: just which dates are taken, no customer details — this
+// is called by anyone visiting the booking page, unauthenticated.
+async function getPublicCateringCalendar() {
+  const [bookings, blocked] = await Promise.all([db.getCateringRequests(), db.getBlockedDates()]);
+  const bookedDates = bookings.filter((b) => b.status !== "canceled").map((b) => b.eventDate);
+  const blockedDates = blocked.map((b) => b.date);
+  return { bookedDates, blockedDates };
+}
+
+// Kitchen-board version: full detail (who/ref/reason), kitchen-auth only.
+async function getStaffCateringCalendar() {
+  const [bookings, blocked] = await Promise.all([db.getCateringRequests(), db.getBlockedDates()]);
+  const booked = bookings
+    .filter((b) => b.status !== "canceled")
+    .map((b) => ({ date: b.eventDate, ref: b.ref, name: b.contact.name, status: b.status }));
+  return { booked, blocked };
+}
+
 function get(req) {
   return new URL(req.url, `http://${req.headers.host}`);
 }
@@ -464,6 +494,35 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 200, { packages: CATERING_PACKAGES });
   }
 
+  // ---- Catering: calendar — which dates are taken (public, read-only, no customer details) ----
+  if (url.pathname === "/api/catering/calendar" && req.method === "GET") {
+    return sendJSON(res, 200, await getPublicCateringCalendar());
+  }
+
+  // ---- Catering: calendar — full detail for staff (kitchen-auth) ----
+  if (url.pathname === "/api/catering/calendar/staff" && req.method === "GET") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+    return sendJSON(res, 200, await getStaffCateringCalendar());
+  }
+
+  // ---- Catering: manually block a date (kitchen-auth) ----
+  if (url.pathname === "/api/catering/calendar/block" && req.method === "POST") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+    const body = await readBody(req).catch(() => ({}));
+    if (!body.date) return sendJSON(res, 400, { error: "A date is required." });
+    const entry = await db.blockDate(body.date, body.reason || "");
+    return sendJSON(res, 200, { blocked: entry });
+  }
+
+  // ---- Catering: unblock a manually-blocked date (kitchen-auth) ----
+  if (url.pathname === "/api/catering/calendar/unblock" && req.method === "POST") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+    const body = await readBody(req).catch(() => ({}));
+    if (!body.date) return sendJSON(res, 400, { error: "A date is required." });
+    const removed = await db.unblockDate(body.date);
+    return sendJSON(res, 200, { removed });
+  }
+
   // ---- Catering: book + pay ----
   if (url.pathname === "/api/catering" && req.method === "POST") {
     try {
@@ -478,6 +537,9 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 400, { error: `${pkg.name} requires at least ${pkg.minHeadcount} guests.` });
       }
       if (!eventDate) return sendJSON(res, 400, { error: "Event date is required." });
+      if (!(await isDateAvailable(eventDate))) {
+        return sendJSON(res, 409, { error: "That date is already booked — please choose another." });
+      }
       if (!eventAddress) return sendJSON(res, 400, { error: "Event address is required." });
       if (!contact || !contact.name || !contact.email || !contact.phone) {
         return sendJSON(res, 400, { error: "Name, email, and phone are required." });

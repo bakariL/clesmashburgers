@@ -373,6 +373,65 @@ section { padding: 72px 0; }
 .ticket-actions { padding: 0 20px 20px; display: grid; gap: 10px; }
 
 /* ---------- Forms ---------- */
+/* ---------- Calendar ---------- */
+.calendar {
+  border: 1px solid #e2e2e2;
+  background: #fff;
+  padding: 16px;
+}
+.calendar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  font-size: 0.95rem;
+}
+.calendar-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--steel);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+}
+.cal-cell {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  border: 1px solid #e2e2e2;
+  background: #fff;
+  border-radius: 2px;
+  color: var(--ink);
+}
+button.cal-cell { cursor: pointer; }
+button.cal-cell:hover { border-color: var(--crust); color: var(--crust); }
+.cal-cell.cal-empty { border: none; background: none; }
+.cal-cell.cal-past { color: #c9c9c9; background: #fafafa; }
+.cal-cell.cal-today { border-color: var(--ink); font-weight: 700; }
+.cal-cell.cal-selected { background: var(--crust); border-color: var(--crust); color: #fff; }
+.cal-cell.cal-booked { background: #f0f0f0; color: #a0a0a0; text-decoration: line-through; cursor: not-allowed; }
+.cal-cell.cal-blocked { background: #fbe1e1; color: var(--crust-dark); cursor: pointer; }
+.calendar-legend {
+  display: flex;
+  gap: 16px;
+  margin-top: 10px;
+  font-size: 0.75rem;
+  color: var(--steel);
+}
+.cal-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; }
+.cal-dot-booked { background: #f0f0f0; border: 1px solid #c9c9c9; }
+.cal-dot-blocked { background: #fbe1e1; border: 1px solid var(--crust); }
+
 .form-card {
   background: var(--paper);
   border: 1px solid #e2e2e2;

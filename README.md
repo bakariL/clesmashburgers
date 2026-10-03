@@ -83,6 +83,29 @@ no line-item customization — set in `CATERING_PACKAGES` near the top of
 `server.js`. That's the only place you need to touch to change prices,
 minimum headcounts, or what each package includes.
 
+**One catering event per day.** The booking page has a real calendar —
+pick an open day, booked/unavailable days are grayed out and can't be
+clicked. The server enforces this too (not just the UI): `POST
+/api/catering` rejects any date that's already taken with a `409`,
+whether that's a real paid booking or a day staff blocked manually.
+
+**Managing the calendar** happens from the kitchen board
+(`/#/kitchen`), in its own "Catering Calendar" section — same month
+view, but for staff:
+- Click an **open** day to manually block it (closed, already
+  promised verbally, prepping for something else — an optional reason
+  prompt lets you note why).
+- Click a **manually-blocked** day to open it back up.
+- Click a **booked** day to see who booked it — cancel it via the
+  status dropdown above (not here) to free that date back up, so
+  there's one source of truth for real bookings.
+
+Two endpoints back this: `GET /api/catering/calendar` is public and
+only returns *which dates are taken* — deliberately no customer names,
+since anyone visiting the booking page can call it. `GET
+/api/catering/calendar/staff` (kitchen-password-protected) returns the
+full detail — who booked what, and why a date is blocked.
+
 **Stripe Tax is wired in too.** Every Checkout Session is created with
 `automatic_tax[enabled]=true` and a verified product tax code
 (`txcd_40060003`, "Food for Immediate Consumption" — covers both
@@ -227,6 +250,7 @@ env.js                    Tiny .env file loader (no dependency)
 .env.example              Every optional setting, documented
 data/orders.json          Orders land here
 data/catering.json        Catering requests land here
+data/blocked-dates.json   Manually-blocked catering dates land here
 public/
   index.html               App shell
   app.js                    Frontend logic (router, cart, forms, kitchen board, PWA install)
@@ -245,10 +269,11 @@ payment form (card / Apple Pay / Google Pay) loads right there on the
 page instead.
 
 **Catering:** Home → *Cater Your Event* → pick a package → enter
-headcount (total updates live) + date + address + contact info →
-*Book & Pay*. Same test-mode/Stripe behavior as ordering. Anyone with
-booking trouble is pointed to a phone number — there's no separate
-"request a quote" form anymore.
+headcount (total updates live) → pick an open day on the calendar →
+address + contact info → *Book & Pay*. Try picking the same day twice
+in two tabs to see the second one get rejected. Same test-mode/Stripe
+behavior as ordering. Anyone with booking trouble is pointed to a
+phone number — there's no separate "request a quote" form anymore.
 
 **Find Us:** `/#/locations` → see the 3 storefronts, each with a
 *Directions* button straight to Google Maps.

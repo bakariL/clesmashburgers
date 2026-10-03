@@ -58,6 +58,7 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
 const ordersStore = new JSONStore(path.join(DATA_DIR, "orders.json"));
 const cateringStore = new JSONStore(path.join(DATA_DIR, "catering.json"));
+const blockedDatesStore = new JSONStore(path.join(DATA_DIR, "blocked-dates.json"));
 
 // ---- Orders ----
 
@@ -111,6 +112,37 @@ function getCateringRequests() {
   return cateringStore.read();
 }
 
+// ---- Manually-blocked catering dates ----
+// Separate from actual paid bookings — this is for staff blocking a date
+// with no booking attached (closed, already promised verbally, prepping
+// for something else, etc.). One entry per blocked date.
+
+function blockDate(date, reason) {
+  return blockedDatesStore.mutate((data) => {
+    const existing = data.find((b) => b.date === date);
+    if (existing) {
+      existing.reason = reason || existing.reason;
+      return existing;
+    }
+    const entry = { date, reason: reason || "", createdAt: new Date().toISOString() };
+    data.push(entry);
+    return entry;
+  });
+}
+
+function unblockDate(date) {
+  return blockedDatesStore.mutate((data) => {
+    const idx = data.findIndex((b) => b.date === date);
+    if (idx === -1) return false;
+    data.splice(idx, 1);
+    return true;
+  });
+}
+
+function getBlockedDates() {
+  return blockedDatesStore.read();
+}
+
 module.exports = {
   createOrder,
   updateOrder,
@@ -120,4 +152,7 @@ module.exports = {
   updateCateringRequest,
   getCateringRequest,
   getCateringRequests,
+  blockDate,
+  unblockDate,
+  getBlockedDates,
 };

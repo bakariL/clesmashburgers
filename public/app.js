@@ -34,6 +34,8 @@ const state = {
   fulfillment: "pickup",
   deferredInstallPrompt: null,
   kitchenAuthed: false,
+  kitchenCalYear: new Date().getFullYear(),
+  kitchenCalMonth: new Date().getMonth(),
   stripeEnabled: false,
   stripePublishableKey: "",
 };
@@ -254,7 +256,7 @@ function viewHome() {
         <p class="lede">Crispy-edge smash burgers, hand-cut fries, and shakes — order ahead for pickup or bring us to your next event. No app store required, just the griddle.</p>
         <div class="hero-actions">
           <a href="#/order" class="btn btn-primary">Order Now</a>
-          <a href="#/locations" class="btn btn-secondary">Find the Stand</a>
+          <a href="#/locations" class="btn btn-secondary">Find a Location</a>
         </div>
       </div>
     </div>
@@ -617,21 +619,22 @@ function viewCateringBook() {
           <div class="row" style="font-size:0.78rem; color:var(--steel);"><span>Tax calculated at checkout, added on top</span></div>
         </div>
 
-        <div class="field-row">
-          <div class="field">
-            <label for="cDate">Event date</label>
-            <input type="date" id="cDate" required>
-          </div>
-          <div class="field">
-            <label for="cType">Event type</label>
-            <select id="cType">
-              <option>Office / corporate</option>
-              <option>Wedding</option>
-              <option>Birthday / private party</option>
-              <option>Tailgate / sports</option>
-              <option>Other</option>
-            </select>
-          </div>
+        <div class="field">
+          <label>Event date <span class="hint">(we only do one event per day — grayed-out days are already taken)</span></label>
+          <div id="cDateCalendar"><p style="color:var(--steel);">Loading calendar…</p></div>
+          <input type="hidden" id="cDate" required>
+          <p id="cDateSelected" style="margin:8px 0 0; font-size:0.9rem; font-weight:600;"></p>
+        </div>
+
+        <div class="field">
+          <label for="cType">Event type</label>
+          <select id="cType">
+            <option>Office / corporate</option>
+            <option>Wedding</option>
+            <option>Birthday / private party</option>
+            <option>Tailgate / sports</option>
+            <option>Other</option>
+          </select>
         </div>
 
         <div class="field">
@@ -764,6 +767,16 @@ function viewKitchen() {
       <div id="kitchenBoard">
         <p style="color:var(--steel);">Loading…</p>
       </div>
+
+      <div class="section-head" style="margin-top:56px;">
+        <div>
+          <h2 class="h-display">Catering Calendar</h2>
+          <p>One event per day. Click an open day to block it manually; click a manually-blocked day to open it back up. Booked days (from real bookings) are canceled via the status dropdown above, not here.</p>
+        </div>
+      </div>
+      <div id="kitchenCalendar">
+        <p style="color:var(--steel);">Loading…</p>
+      </div>
     </div>
   </section>`;
 }
@@ -849,12 +862,13 @@ function startKitchenPolling() {
   const load = async () => {
     const passcode = localStorage.getItem("csb_kitchen_passcode") || "";
     try {
-      const [ordersRes, cateringRes, cloverRes] = await Promise.all([
+      const [ordersRes, cateringRes, cloverRes, calRes] = await Promise.all([
         fetch("/api/orders", { headers: { "x-kitchen-passcode": passcode } }),
         fetch("/api/catering", { headers: { "x-kitchen-passcode": passcode } }),
         fetch("/api/clover/status", { headers: { "x-kitchen-passcode": passcode } }),
+        fetch("/api/catering/calendar/staff", { headers: { "x-kitchen-passcode": passcode } }),
       ]);
-      if (ordersRes.status === 401 || cateringRes.status === 401) {
+      if (ordersRes.status === 401 || cateringRes.status === 401 || calRes.status === 401) {
         state.kitchenAuthed = false;
         clearInterval(kitchenPollTimer);
         render();
@@ -863,16 +877,73 @@ function startKitchenPolling() {
       const ordersData = await ordersRes.json();
       const cateringData = await cateringRes.json();
       const cloverData = await cloverRes.json().catch(() => ({ enabled: false }));
+      const calData = await calRes.json().catch(() => ({ booked: [], blocked: [] }));
 
       const board = document.getElementById("kitchenBoard");
       if (board) board.innerHTML = renderKitchenBoard(ordersData.orders || [], cateringData.requests || [], Boolean(cloverData.enabled));
       attachKitchenStatusHandlers();
+
+      renderKitchenCalendar(calData.booked || [], calData.blocked || []);
     } catch {
       // transient network hiccup — next poll will retry
     }
   };
   load();
   kitchenPollTimer = setInterval(load, 5000);
+}
+
+function renderKitchenCalendar(booked, blocked) {
+  const el = document.getElementById("kitchenCalendar");
+  if (!el) return;
+  const bookedDates = booked.map(b => b.date);
+  const blockedDates = blocked.map(b => b.date);
+
+  el.innerHTML = renderCalendarMonth(state.kitchenCalYear, state.kitchenCalMonth, {
+    bookedDates,
+    blockedDates,
+    dayAttr: "kcal-day",
+  });
+
+  el.querySelectorAll("[data-cal-nav]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      state.kitchenCalMonth += Number(btn.dataset.calNav);
+      if (state.kitchenCalMonth < 0) { state.kitchenCalMonth = 11; state.kitchenCalYear--; }
+      if (state.kitchenCalMonth > 11) { state.kitchenCalMonth = 0; state.kitchenCalYear++; }
+      renderKitchenCalendar(booked, blocked);
+    });
+  });
+
+  el.querySelectorAll("[data-kcal-day]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const dateStr = btn.dataset.kcalDay;
+      const passcode = localStorage.getItem("csb_kitchen_passcode") || "";
+      const bookedEntry = booked.find(b => b.date === dateStr);
+      const blockedEntry = blocked.find(b => b.date === dateStr);
+
+      if (bookedEntry) {
+        showToast(`${dateStr}: booked by ${bookedEntry.name} (${bookedEntry.ref}) — cancel it via the status dropdown above to free this date.`);
+        return;
+      }
+
+      if (blockedEntry) {
+        await fetch("/api/catering/calendar/unblock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-kitchen-passcode": passcode },
+          body: JSON.stringify({ date: dateStr }),
+        });
+        showToast(`${dateStr} is open again`);
+      } else {
+        const reason = window.prompt(`Block ${dateStr}? Optional reason (e.g. "closed", "prepping for an event"):`, "");
+        if (reason === null) return; // canceled the prompt
+        await fetch("/api/catering/calendar/block", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-kitchen-passcode": passcode },
+          body: JSON.stringify({ date: dateStr, reason }),
+        });
+        showToast(`${dateStr} blocked`);
+      }
+    });
+  });
 }
 
 function attachKitchenStatusHandlers() {
@@ -978,6 +1049,66 @@ function renderLocationsList(locations) {
     return;
   }
   el.innerHTML = `<div class="menu-board">${locations.map(renderLocationCard).join('')}</div>`;
+}
+
+// ---------------- Calendar (shared by catering booking + kitchen board) ----------------
+
+function dateToISO(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function todayISODate() {
+  return dateToISO(new Date());
+}
+
+// Renders a single month as a click-to-select grid. opts:
+//   bookedDates, blockedDates: arrays of "YYYY-MM-DD" strings, shown as taken
+//   selectedDate: "YYYY-MM-DD" to highlight
+//   dayAttr: the data-* attribute name used on clickable days (lets the
+//     catering page and kitchen board wire up different click behavior)
+//   disablePast: grays out days before today and makes them unclickable
+function renderCalendarMonth(year, month, opts = {}) {
+  const { bookedDates = [], blockedDates = [], selectedDate = null, dayAttr = "cal-day", disablePast = true } = opts;
+  const today = todayISODate();
+  const first = new Date(year, month, 1);
+  const startWeekday = first.getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const monthLabel = first.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+
+  let cells = "";
+  for (let i = 0; i < startWeekday; i++) cells += `<div class="cal-cell cal-empty"></div>`;
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const isPast = disablePast && dateStr < today;
+    const isBooked = bookedDates.includes(dateStr);
+    const isBlocked = blockedDates.includes(dateStr);
+    const isTaken = isBooked || isBlocked;
+    const classes = ["cal-cell"];
+    if (dateStr === today) classes.push("cal-today");
+    if (dateStr === selectedDate) classes.push("cal-selected");
+    if (isPast) classes.push("cal-past");
+    if (isBooked) classes.push("cal-booked");
+    if (isBlocked) classes.push("cal-blocked");
+    const clickable = !isPast;
+    cells += clickable
+      ? `<button type="button" class="${classes.join(' ')}" data-${dayAttr}="${dateStr}">${d}</button>`
+      : `<div class="${classes.join(' ')}">${d}</div>`;
+  }
+
+  return `
+  <div class="calendar">
+    <div class="calendar-head">
+      <button type="button" class="btn btn-dark btn-sm" data-cal-nav="-1">‹</button>
+      <span>${monthLabel}</span>
+      <button type="button" class="btn btn-dark btn-sm" data-cal-nav="1">›</button>
+    </div>
+    <div class="calendar-weekdays"><span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span></div>
+    <div class="calendar-grid">${cells}</div>
+    <div class="calendar-legend">
+      <span><i class="cal-dot cal-dot-booked"></i> Booked</span>
+      <span><i class="cal-dot cal-dot-blocked"></i> Unavailable</span>
+    </div>
+  </div>`;
 }
 
 // ---------------- Render ----------------
@@ -1165,6 +1296,60 @@ function attachHandlers(route) {
     };
     headcountInput.addEventListener("input", updateTotal);
 
+    let calYear = new Date().getFullYear();
+    let calMonth = new Date().getMonth();
+    let calBooked = [];
+    let calBlocked = [];
+
+    const selectDate = (dateStr) => {
+      document.getElementById("cDate").value = dateStr;
+      const label = new Date(`${dateStr}T00:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+      document.getElementById("cDateSelected").textContent = `Selected: ${label}`;
+    };
+
+    const renderCal = () => {
+      const el = document.getElementById("cDateCalendar");
+      if (!el) return;
+      el.innerHTML = renderCalendarMonth(calYear, calMonth, {
+        bookedDates: calBooked,
+        blockedDates: calBlocked,
+        selectedDate: document.getElementById("cDate").value,
+      });
+      el.querySelectorAll("[data-cal-nav]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          calMonth += Number(btn.dataset.calNav);
+          if (calMonth < 0) { calMonth = 11; calYear--; }
+          if (calMonth > 11) { calMonth = 0; calYear++; }
+          renderCal();
+        });
+      });
+      el.querySelectorAll("[data-cal-day]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          selectDate(btn.dataset.calDay);
+          renderCal();
+        });
+      });
+    };
+
+    fetch("/api/catering/calendar")
+      .then(r => r.json())
+      .then(data => {
+        calBooked = data.bookedDates || [];
+        calBlocked = data.blockedDates || [];
+        renderCal();
+      })
+      .catch(() => {
+        // Calendar unavailable — fall back to a plain date picker so
+        // booking still works, just without the visual availability.
+        const el = document.getElementById("cDateCalendar");
+        if (el) {
+          el.innerHTML = `
+            <p style="color:var(--steel); margin-bottom:8px;">Couldn't load the calendar — pick a date and we'll confirm availability when you submit.</p>
+            <input type="date" id="cDateFallback">`;
+          document.getElementById("cDateFallback").addEventListener("change", (e) => selectDate(e.target.value));
+        }
+      });
+
     document.getElementById("cateringForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const errorBox = document.getElementById("cateringError");
@@ -1223,6 +1408,18 @@ function attachHandlers(route) {
         errorBox.innerHTML = `<div class="form-error-banner">${err.message}</div>`;
         submitBtn.disabled = false;
         submitBtn.textContent = `Book & Pay — ~${document.getElementById("cSubmitTotal").textContent}`;
+        // If someone else just took this date, refresh the calendar so
+        // it shows as taken instead of leaving it looking available.
+        if (err.message.toLowerCase().includes("already booked")) {
+          fetch("/api/catering/calendar")
+            .then(r => r.json())
+            .then(data => {
+              calBooked = data.bookedDates || [];
+              calBlocked = data.blockedDates || [];
+              renderCal();
+            })
+            .catch(() => {});
+        }
       }
     });
   }
