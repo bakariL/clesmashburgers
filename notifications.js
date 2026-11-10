@@ -76,7 +76,6 @@ ${row("Event date", r.eventDate)}
 ${row("Requested drop off time", fmtTime(r.eventTime))}
 ${row("Event type", r.eventType)}
 ${row("Event address", r.eventAddress)}
-${row("Budget", r.budgetNote)}
 ${row("Notes", r.notes)}
 ${row("Organizer", r.contact.name)}
 ${row("Contact email", r.contact.email)}
@@ -92,22 +91,29 @@ ${row("Reference", r.ref)}
 }
 
 // Customer confirmation + team notification.
+// Returns { customerEmail: "sent" | "not sent (email not configured)" | "failed: <why>" } so the
+// dashboard can show whether the customer's confirmation went out.
 async function sendCateringConfirmation(request) {
-  await sendCateringTeamNotification(request);
+  // Team notification runs alongside the customer's messages, never blocking them.
+  const teamDone = sendCateringTeamNotification(request);
 
   const msg = `Your catering order (${itemsText(request.items)}) is booked for ${request.eventDate} at ${request.eventAddress}${request.eventTime ? ` (requested drop off: ${fmtTime(request.eventTime)})` : ""}. Estimated total: $${request.total.toFixed(2)} + tax. Someone will contact you in 24hrs.`;
-  await withRetry(`catering ${request.ref} customer email`, () =>
+  const emailResult = await withRetry(`catering ${request.ref} customer email`, () =>
     notify.sendEmail(
       request.contact.email,
       `Booking confirmed — Cleveland Smash Burgers Catering`,
-      `<h2>You're booked, ${esc(request.contact.firstName || request.contact.name)}!</h2><p>Your catering order is booked for <strong>${esc(request.eventDate)}</strong> — ${esc(request.eventTitle)} — at ${esc(request.eventAddress)}.</p>${request.eventTime ? `<p>Requested drop off time: <strong>${esc(fmtTime(request.eventTime))}</strong></p>` : ""}<p>Your order:</p><ul>${itemsHtml(request.items)}</ul><p>Estimated total: $${request.total.toFixed(2)} (plus tax). Someone will contact you in 24hrs.</p><p>You paid $0 today — there's no cost to book.</p><p>Reference: <strong>${esc(request.ref)}</strong></p><p>Questions? Reply to this email or call (216) 971-1884.</p>`
+      `<h2>You're booked, ${esc(request.contact.firstName || request.contact.name)}!</h2><p>Your catering order is booked for <strong>${esc(request.eventDate)}</strong> — ${esc(request.eventTitle)} — at ${esc(request.eventAddress)}.</p>${request.eventTime ? `<p>Requested drop off time: <strong>${esc(fmtTime(request.eventTime))}</strong></p>` : ""}<p>Your order:</p><ul>${itemsHtml(request.items)}</ul><p>Estimated total: $${request.total.toFixed(2)} (plus tax). Someone will contact you in 24hrs.</p><p>You paid $0 today — there's no cost to book.</p><p>Reference: <strong>${esc(request.ref)}</strong></p><p>Questions? Reply to this email or call (216) 971-1884.</p>`,
+      { replyTo: cateringRecipients()[0] }
     )
   );
+  const customerEmail = !emailResult ? "failed" : emailResult.error ? `failed: ${emailResult.error}` : emailResult.simulated ? "not sent (email not configured)" : "sent";
   if (request.contact.phone) {
     await withRetry(`catering ${request.ref} SMS`, () =>
       notify.sendSMS("+1" + String(request.contact.phone).replace(/\D/g, "").slice(-10), `Cleveland Smash Burgers: booking ${request.ref} confirmed. ${msg}`)
     );
   }
+  await teamDone;
+  return { customerEmail };
 }
 
 // Free-form email from the admin dashboard to the booking's contact.

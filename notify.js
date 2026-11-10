@@ -46,10 +46,12 @@ async function sendEmail(to, subject, html, opts = {}) {
     console.log(`[DEV] Would email ${to} — "${subject}"`);
     return { simulated: true };
   }
-  const from = process.env.RESEND_FROM_EMAIL || "orders@clesmashburgers.com";
+  const rawFrom = process.env.RESEND_FROM_EMAIL || "orders@clesmashburgers.com";
+  // Show "Cleveland Smash Burgers" as the sender name unless a full "Name <addr>" was configured.
+  const from = rawFrom.includes("<") ? rawFrom : `Cleveland Smash Burgers <${rawFrom}>`;
 
   try {
-    const res = await fetch("https://api.resend.com/emails", {
+    const res = await fetch(process.env.RESEND_API_URL || "https://api.resend.com/emails", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.RESEND_API_KEY}`,

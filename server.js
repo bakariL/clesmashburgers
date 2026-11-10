@@ -14,7 +14,6 @@ loadEnv();
 const db = require("./db");
 const notify = require("./notify");
 const notifications = require("./notifications");
-const address = require("./address");
 const clover = require("./clover");
 
 const PORT = process.env.PORT || 3000;
@@ -255,6 +254,8 @@ function validateContact(contact) {
   const firstName = String(contact.firstName || "").trim().slice(0, 50);
   const lastName = String(contact.lastName || "").trim().slice(0, 50);
   if (!firstName || !lastName) return { error: "Please enter the event organizer's first and last name." };
+  const NAME_RE = /^\p{L}[\p{L}\s'.\-]*$/u; // letters only (plus space, hyphen, apostrophe, period)
+  if (!NAME_RE.test(firstName) || !NAME_RE.test(lastName)) return { error: "Names can only contain letters." };
   const email = String(contact.email || "").trim();
   if (email.length > 254 || !EMAIL_RE.test(email)) return { error: "Please enter a valid email address." };
   const phone = String(contact.phone || "").replace(/\D/g, "");
@@ -262,14 +263,6 @@ function validateContact(contact) {
   return { contact: { firstName, lastName, name: `${firstName} ${lastName}`, email, phone } };
 }
 
-const addressHits = new Map(); // ip -> { n, reset }
-function addressRateLimited(ip) {
-  const now = Date.now();
-  const rec = addressHits.get(ip);
-  if (!rec || rec.reset < now) { addressHits.set(ip, { n: 1, reset: now + 60000 }); return false; }
-  rec.n += 1;
-  return rec.n > 60;
-}
 
 
 function get(req) {
@@ -326,7 +319,7 @@ const server = http.createServer(async (req, res) => {
       subtotal: 120, tax: 0, total: 120,
       eventDate: new Date().toISOString().slice(0, 10), eventTime: "12:00", eventTitle: "TEST — sample booking",
       eventType: "Office / corporate", eventAddress: "3915 Carnegie Ave, Cleveland, OH 44115",
-      budgetNote: "", notes: "This is a test of the booking notification email.",
+      notes: "This is a test of the booking notification email.",
       contact: { firstName: "Test", lastName: "Customer", name: "Test Customer", email: "test@example.com", phone: "2165550100" },
     };
     const result = await notifications.sendCateringTeamNotification(sample);
@@ -360,17 +353,6 @@ const server = http.createServer(async (req, res) => {
     const updated = await db.updateCateringRequest(ref, { emails: [...(booking.emails || []), entry] });
     if (result.error) return sendJSON(res, 502, { error: `Email failed: ${result.error}`, request: updated });
     return sendJSON(res, 200, { request: updated, simulated: Boolean(result.simulated) });
-  }
-
-  // ---- Address autocomplete (public, rate-limited; provider key stays server-side) ----
-  if (url.pathname === "/api/address/suggest" && req.method === "GET") {
-    if (addressRateLimited(clientIp(req))) return sendJSON(res, 429, { error: "Too many lookups — slow down a moment." });
-    try {
-      return sendJSON(res, 200, await address.suggest(url.searchParams.get("q")));
-    } catch (e) {
-      console.error("Address lookup failed:", e.message);
-      return sendJSON(res, 502, { error: "Address lookup is unavailable right now." });
-    }
   }
 
   // ---- Catering: menu (public) ----
@@ -411,7 +393,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/api/catering" && req.method === "POST") {
     try {
       const body = await readBody(req);
-      const { eventDate, eventType, eventAddress, budgetNote, notes } = body;
+      const { eventDate, eventType, eventAddress, notes } = body;
 
       const built = buildCateringOrder(body.items);
       if (built.error) return sendJSON(res, 400, { error: built.error });
@@ -446,7 +428,6 @@ const server = http.createServer(async (req, res) => {
         eventTitle,
         eventType: eventType || "not specified",
         eventAddress: addr,
-        budgetNote: String(budgetNote || "").slice(0, 300),
         notes: String(notes || "").slice(0, 1000),
         contact,
         status: "booked",
@@ -454,7 +435,11 @@ const server = http.createServer(async (req, res) => {
       };
 
       await db.createCateringRequest(booking);
-      await notifications.sendCateringConfirmation(booking);
+      // Send the customer's confirmation + the team notification in the background so a slow or
+      // failing email provider never delays the booking; the outcome is saved on the booking.
+      notifications.sendCateringConfirmation(booking)
+        .then((r) => db.updateCateringRequest(booking.ref, { confirmationEmail: r.customerEmail, confirmationEmailAt: new Date().toISOString() }))
+        .catch((e) => console.error("Confirmation send failed:", e.message));
       const synced = await pushCateringToClover(booking);
       const finalBooking = await db.updateCateringRequest(booking.ref, { cloverSynced: synced });
       return sendJSON(res, 201, { request: finalBooking || booking });

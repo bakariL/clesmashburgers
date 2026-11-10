@@ -53,6 +53,10 @@ function fmtPhoneUS(p) {
   return d;
 }
 
+// Names: letters only, plus spaces, hyphens, apostrophes and periods (e.g. Mary-Jane, O'Brien, St. John).
+const NAME_RE = /^\p{L}[\p{L}\s'.\-]*$/u;
+const stripNameChars = (v) => v.replace(/[^\p{L}\s'.\-]/gu, "");
+
 const EMAIL_RE = /^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
 
 function longDate(dateStr) {
@@ -317,10 +321,9 @@ function viewCatering() {
             </select>
           </div>
 
-          <div class="field addr-wrap">
-            <label for="cAddress">Event address <span class="hint">(suggestions appear as you type)</span></label>
-            <input type="text" id="cAddress" required placeholder="Street address" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="cAddressList">
-            <ul id="cAddressList" class="addr-list" role="listbox" hidden></ul>
+          <div class="field">
+            <label for="cAddress">Event address</label>
+            <input type="text" id="cAddress" required placeholder="Street address, city, state, ZIP" autocomplete="street-address">
           </div>
 
           <div class="field-row">
@@ -342,10 +345,6 @@ function viewCatering() {
             <input type="email" id="cEmail" required placeholder="you@example.com" autocomplete="email" inputmode="email" maxlength="254">
           </div>
 
-          <div class="field">
-            <label for="cBudget">Budget notes <span class="hint">(optional)</span></label>
-            <input type="text" id="cBudget" placeholder="e.g. flexible, or tied to a specific budget">
-          </div>
           <div class="field">
             <label for="cNotes">Anything else we should know? <span class="hint">(optional)</span></label>
             <textarea id="cNotes" placeholder="Parking, timing, dietary notes, etc."></textarea>
@@ -544,7 +543,6 @@ function renderKitchenBoard(cateringRequests, cloverEnabled) {
               ${detail("Requested drop off", r.eventTime ? escapeHtml(fmtTime12(r.eventTime)) : "—")}
               ${detail("Type", escapeHtml(r.eventType))}
               ${detail("Address", escapeHtml(r.eventAddress))}
-              ${detail("Budget", escapeHtml(r.budgetNote))}
               ${detail("Booked", fmtDateTime(r.createdAt))}
             </div>
           </div>
@@ -556,6 +554,7 @@ function renderKitchenBoard(cateringRequests, cloverEnabled) {
           <div class="kv" style="margin-top:8px;"><span>Estimated total (before tax)</span><span><strong>${money(r.total || 0)}</strong></span></div>
           ${r.notes ? `<h4>Customer notes</h4><div style="font-size:0.9rem;">${escapeHtml(r.notes)}</div>` : ''}
           ${cloverLine(r)}
+          ${r.confirmationEmail ? `<div class="kv" style="margin-top:8px;"><span>Customer confirmation email</span><span style="${r.confirmationEmail === "sent" ? "color:var(--pickle)" : "color:var(--crust)"}">${escapeHtml(r.confirmationEmail === "sent" ? "✓ sent" : r.confirmationEmail)}</span></div>` : ''}
 
           ${(r.emails && r.emails.length) ? `
             <h4>Emails sent from here</h4>
@@ -1125,54 +1124,20 @@ function attachHandlers(route) {
       });
     };
 
+    // ---- Names: text only (digits and symbols are removed as they type) ----
+    ["cFirst", "cLast"].forEach(id => {
+      const el = document.getElementById(id);
+      el.addEventListener("input", () => {
+        const cleaned = stripNameChars(el.value);
+        if (cleaned !== el.value) el.value = cleaned;
+      });
+    });
+
     // ---- Phone: digits only, max 10, auto-formatted ----
     const phoneEl = document.getElementById("cPhone");
     phoneEl.addEventListener("input", () => {
       phoneEl.value = fmtPhoneUS(phoneEl.value);
     });
-
-    // ---- Address autocomplete: optional suggestions, free typing always allowed ----
-    const addrEl = document.getElementById("cAddress");
-    const listEl = document.getElementById("cAddressList");
-    let addrTimer = null;
-    let addrReq = 0;
-
-    const closeList = () => { listEl.hidden = true; listEl.innerHTML = ""; addrEl.setAttribute("aria-expanded", "false"); };
-
-    addrEl.addEventListener("input", () => {
-      clearTimeout(addrTimer);
-      const q = addrEl.value.trim();
-      if (q.length < 4) { closeList(); return; }
-      addrTimer = setTimeout(async () => {
-        const mine = ++addrReq;
-        try {
-          const res = await fetch(`/api/address/suggest?q=${encodeURIComponent(q)}`);
-          if (!res.ok) throw new Error("lookup failed");
-          const data = await res.json();
-          if (mine !== addrReq) return;
-          const items = data.suggestions || [];
-          if (!items.length) {
-            closeList();
-            return;
-          } else {
-            listEl.innerHTML = items.map((it, i) => `<li role="option" class="addr-item" data-i="${i}">${escapeHtml(it.label)}</li>`).join("");
-            listEl.querySelectorAll(".addr-item").forEach(li => {
-              li.addEventListener("mousedown", (ev) => {
-                ev.preventDefault();
-                addrEl.value = items[Number(li.dataset.i)].label;
-                closeList();
-              });
-            });
-          }
-          listEl.hidden = false;
-          addrEl.setAttribute("aria-expanded", "true");
-        } catch {
-          closeList(); // lookup unavailable — they can just type the address
-        }
-      }, 250);
-    });
-    addrEl.addEventListener("keydown", (e) => { if (e.key === "Escape" || e.key === "Tab") closeList(); });
-    addrEl.addEventListener("blur", () => setTimeout(closeList, 150));
 
     fetch("/api/catering/calendar")
       .then(r => r.json())
@@ -1212,7 +1177,6 @@ function attachHandlers(route) {
         eventTitle: document.getElementById("cTitle").value,
         eventType: document.getElementById("cType").value,
         eventAddress: document.getElementById("cAddress").value.trim(),
-        budgetNote: document.getElementById("cBudget").value.trim(),
         notes: document.getElementById("cNotes").value.trim(),
         contact: {
           firstName: document.getElementById("cFirst").value.trim(),
@@ -1236,6 +1200,7 @@ function attachHandlers(route) {
       if (!payload.eventDate || !payload.eventTime || !payload.eventTitle) return fail("Please tap a day on the calendar and enter your event's title and requested drop off time.");
       if (!payload.eventAddress) return fail("Please enter the event address.");
       if (!payload.contact.firstName || !payload.contact.lastName) return fail("Please enter the organizer's first and last name.");
+      if (!NAME_RE.test(payload.contact.firstName) || !NAME_RE.test(payload.contact.lastName)) return fail("Names can only contain letters.");
       if (payload.contact.phone.length !== 10) return fail("Phone number must be exactly 10 digits.");
       if (!EMAIL_RE.test(payload.contact.email)) return fail("Please enter a valid email address.");
 

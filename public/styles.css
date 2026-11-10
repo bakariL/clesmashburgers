@@ -759,15 +759,8 @@ footer {
 .email-log span { color:var(--steel); font-size:0.78rem; }
 @media (max-width: 640px) { .admin-grid { grid-template-columns:1fr; } }
 
-/* Event date/time summary + address autocomplete */
+/* Event date/time summary */
 .date-selected { margin-top:10px; font-size:0.92rem; }
-.addr-wrap { position:relative; }
-.addr-list { position:absolute; left:0; right:0; z-index:20; margin:2px 0 0; padding:0; list-style:none; background:#fff; border:1px solid var(--steel); box-shadow:0 8px 20px rgba(0,0,0,.15); max-height:260px; overflow:auto; }
-.addr-item, .addr-empty { padding:10px 12px; font-size:0.92rem; border-bottom:1px solid #eee; }
-.addr-item { cursor:pointer; }
-.addr-item:hover { background:#fbe1e1; }
-.addr-empty { color:var(--steel); }
-.addr-status { margin:6px 0 0; font-size:0.8rem; min-height:1em; }
 
 .qty-input { width:72px; min-height:36px; text-align:center; font-weight:700; font-size:1rem; border:1px solid var(--steel); border-radius:0; padding:0 4px; -moz-appearance:textfield; }
 .qty-input::-webkit-outer-spin-button, .qty-input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
