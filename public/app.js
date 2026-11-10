@@ -13,6 +13,7 @@ const FALLBACK_CATERING_MENU = {
   minimum: 10,
   comboUpgrade: { price: 5, description: "Adds fries and a drink" },
   dessertAddOn: { price: 5, description: "Add a dessert" },
+  sides: [{ id: "pan-of-fries", name: "Pan of Fries", price: 25 }],
 };
 
 const FALLBACK_LOCATIONS = [
@@ -147,7 +148,6 @@ function nav() {
         ${link('#/locations', 'Find Us')}
         ${link('#/catering', 'Catering')}
       </nav>
-      <button class="nav-cta" id="installNavBtn">Get the App</button>
     </div>
   </header>`;
 }
@@ -173,9 +173,6 @@ function footer() {
       </div>
       <div class="footer-bottom">
         <span>© ${new Date().getFullYear()} Cleveland Smash Burgers. Prototype build.</span>
-        <span>
-          <a href="#" id="installFooterBtn" style="color:var(--mustard);">Install the app</a>
-        </span>
       </div>
     </div>
   </footer>`;
@@ -221,30 +218,11 @@ function viewHome() {
       </div>
     </div>
   </section>
-
-  <section>
-    <div class="container">
-      <div class="section-head">
-        <div>
-          <h2 class="h-display">Take us with you</h2>
-          <p>Install Cleveland Smash Burgers as an app on your phone — order faster next time, no app store needed.</p>
-        </div>
-      </div>
-      <div class="install-card">
-        <img class="app-icon" src="/icons/icon-192.png" alt="Cleveland Smash Burgers app icon" width="96" height="96">
-        <div>
-          <p style="margin:0 0 10px; font-size:0.95rem; color:#5c5c5c;">This site installs like a native app right from your browser: tap <strong>Get the App</strong> above, or use your browser's "Add to Home Screen" option. It'll launch full-screen with an icon on your home screen — no App Store or Play Store listing yet.</p>
-          <button class="btn btn-dark" id="installInlineBtn">Install the App</button>
-        </div>
-      </div>
-    </div>
-  </section>`;
+`;
 }
 
-function sandwichRow(m) {
-  const combo = state.cateringMenu.comboUpgrade;
-  const dessert = state.cateringMenu.dessertAddOn;
-  const ctl = (kind, id, label, hint = "") => `
+function qtyCtl(kind, id, label, hint = "") {
+  return `
     <div class="qty-line">
       <span>${label}${hint ? ` <span class="hint">· ${hint}</span>` : ""}</span>
       <div class="qty-ctl">
@@ -253,6 +231,21 @@ function sandwichRow(m) {
         <button type="button" class="btn btn-dark btn-sm" data-cqty-up="${kind}:${id}" aria-label="More ${label}">+</button>
       </div>
     </div>`;
+}
+
+function sideRow(s) {
+  return `
+  <div class="pkg-card" data-side="${s.id}">
+    <div class="pkg-name">${s.name}</div>
+    <div class="pkg-price">${money(s.price)} each</div>
+    ${qtyCtl("side", s.id, "Quantity")}
+  </div>`;
+}
+
+function sandwichRow(m) {
+  const combo = state.cateringMenu.comboUpgrade;
+  const dessert = state.cateringMenu.dessertAddOn;
+  const ctl = qtyCtl;
   return `
   <div class="pkg-card" data-sandwich="${m.id}">
     <div class="pkg-name">${m.name}</div>
@@ -292,6 +285,9 @@ function viewCatering() {
         <div class="pkg-grid">
           ${menu.sandwiches.map(sandwichRow).join("")}
         </div>
+        ${(menu.sides || []).length ? `<h3 class="h-display" style="margin:28px 0 12px;">Sides</h3>
+        <p style="margin:0 0 12px;">Sides don't count toward the ${menu.minimum || 10}-sandwich minimum.</p>
+        <div class="pkg-grid">${menu.sides.map(sideRow).join("")}</div>` : ""}
 
         <div class="form-card" style="max-width:640px; margin-top:28px;">
           <div class="confirm-detail-card" style="margin:0 0 20px;">
@@ -379,6 +375,7 @@ function renderCateringConfirmedDetail(req) {
           <div class="row"><span>${i.qty}× ${escapeHtml(i.name)}${i.comboQty ? ` · ${i.comboQty} combo` : ""}${i.dessertQty ? ` · ${i.dessertQty} dessert` : ""}</span><span></span></div>
           ${i.notes ? `<div class="row" style="font-size:0.8rem; color:var(--steel);"><span>Request: ${escapeHtml(i.notes)}</span><span></span></div>` : ""}
         `).join("")}
+        ${(req.sides || []).map(s => `<div class="row"><span>${s.qty}× ${escapeHtml(s.name)}</span><span></span></div>`).join("")}
         ${req.eventTitle ? `<div class="row"><span>Event</span><span>${escapeHtml(req.eventTitle)}</span></div>` : ""}
         <div class="row"><span>Event date</span><span>${req.eventDate}</span></div>
         ${req.eventTime ? `<div class="row"><span>Requested drop off time</span><span>${fmtTime12(req.eventTime)}</span></div>` : ""}
@@ -549,7 +546,7 @@ function renderKitchenBoard(cateringRequests, cloverEnabled) {
 
           <h4>Order — ${r.guestCount || (r.items || []).reduce((n, i) => n + i.qty, 0)} sandwiches</h4>
           <ul style="margin:0; padding-left:18px; font-size:0.9rem;">
-            ${(r.items || []).map(i => `<li><strong>${i.qty}× ${escapeHtml(i.name)}</strong>${i.comboQty ? ` · ${i.comboQty} combo` : ''}${i.dessertQty ? ` · ${i.dessertQty} dessert` : ''}${i.notes ? `<br><em>Request: ${escapeHtml(i.notes)}</em>` : ''}</li>`).join('')}
+            ${(r.items || []).map(i => `<li><strong>${i.qty}× ${escapeHtml(i.name)}</strong>${i.comboQty ? ` · ${i.comboQty} combo` : ''}${i.dessertQty ? ` · ${i.dessertQty} dessert` : ''}${i.notes ? `<br><em>Request: ${escapeHtml(i.notes)}</em>` : ''}</li>`).join('')}${(r.sides || []).map(s => `<li><strong>${s.qty}× ${escapeHtml(s.name)}</strong></li>`).join('')}
           </ul>
           <div class="kv" style="margin-top:8px;"><span>Estimated total (before tax)</span><span><strong>${money(r.total || 0)}</strong></span></div>
           ${r.notes ? `<h4>Customer notes</h4><div style="font-size:0.9rem;">${escapeHtml(r.notes)}</div>` : ''}
@@ -996,11 +993,13 @@ function attachHandlers(route) {
     const menu = state.cateringMenu;
     const qtys = {};
     menu.sandwiches.forEach(m => { qtys[m.id] = { qty: 0, combo: 0, dessert: 0 }; });
+    const sideQtys = {};
+    (menu.sides || []).forEach(s => { sideQtys[s.id] = 0; });
 
     const orderTotal = () => menu.sandwiches.reduce((sum, m) => {
       const q = qtys[m.id];
       return sum + m.price * q.qty + menu.comboUpgrade.price * q.combo + menu.dessertAddOn.price * q.dessert;
-    }, 0);
+    }, 0) + (menu.sides || []).reduce((sum, s) => sum + s.price * sideQtys[s.id], 0);
 
     const updateTotal = () => {
       menu.sandwiches.forEach(m => {
@@ -1009,6 +1008,10 @@ function attachHandlers(route) {
           // don't overwrite a box the customer is mid-typing in
           if (el && el !== document.activeElement) el.value = qtys[m.id][k];
         });
+      });
+      (menu.sides || []).forEach(s => {
+        const el = document.getElementById(`cq-side-${s.id}`);
+        if (el && el !== document.activeElement) el.value = sideQtys[s.id];
       });
       const count = menu.sandwiches.reduce((n, m) => n + qtys[m.id].qty, 0);
       const min = menu.minimum || 10;
@@ -1020,6 +1023,11 @@ function attachHandlers(route) {
 
     const bump = (attr, delta) => {
       const [kind, id] = attr.split(":");
+      if (kind === "side") {
+        if (!(id in sideQtys)) return;
+        sideQtys[id] = Math.max(0, Math.min(MAX_QTY, sideQtys[id] + delta));
+        return updateTotal();
+      }
       const q = qtys[id];
       if (!q) return;
       q[kind] = Math.max(0, Math.min(MAX_QTY, q[kind] + delta));
@@ -1035,6 +1043,11 @@ function attachHandlers(route) {
       inp.addEventListener("input", () => {
         const raw = inp.value.replace(/\D/g, "");
         let n = raw === "" ? 0 : Math.min(MAX_QTY, parseInt(raw, 10));
+        if (kind === "side") {
+          sideQtys[id] = n;
+          if (raw !== "" && String(n) !== raw) inp.value = n;
+          return updateTotal();
+        }
         const q = qtys[id];
         if (kind !== "qty") n = Math.min(n, q.qty); // combos/desserts can't exceed sandwiches
         q[kind] = n;
@@ -1043,7 +1056,7 @@ function attachHandlers(route) {
         updateTotal();
       });
       inp.addEventListener("focus", () => inp.select());
-      inp.addEventListener("blur", () => { inp.value = qtys[id][kind]; });
+      inp.addEventListener("blur", () => { inp.value = kind === "side" ? sideQtys[id] : qtys[id][kind]; });
     });
     document.querySelectorAll("[data-cqty-up]").forEach(b => b.addEventListener("click", () => bump(b.dataset.cqtyUp, 1)));
     document.querySelectorAll("[data-cqty-down]").forEach(b => b.addEventListener("click", () => bump(b.dataset.cqtyDown, -1)));
@@ -1172,6 +1185,7 @@ function attachHandlers(route) {
             dessertQty: qtys[m.id].dessert,
             notes: document.getElementById(`cnote-${m.id}`).value.trim(),
           })),
+        sides: (menu.sides || []).filter(s => sideQtys[s.id] > 0).map(s => ({ id: s.id, qty: sideQtys[s.id] })),
         eventDate: document.getElementById("cDate").value,
         eventTime: document.getElementById("cTime").value,
         eventTitle: document.getElementById("cTitle").value,

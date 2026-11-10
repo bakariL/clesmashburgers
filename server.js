@@ -85,6 +85,8 @@ const CATERING_MENU = {
   ],
   comboUpgrade: { price: 5, description: "Adds fries and a drink" },
   dessertAddOn: { price: 5, description: "Add a dessert" },
+  // Standalone sides — priced per pan, do NOT count toward the sandwich minimum.
+  sides: [{ id: "pan-of-fries", name: "Pan of Fries", price: 25 }],
 };
 
 const CATERING_STATUSES = ["booked", "in_progress", "completed", "canceled"];
@@ -156,7 +158,7 @@ function clientIp(req) {
 // Validates the customer's catering selection against CATERING_MENU and
 // prices it on the server (never trust prices from the browser). Returns
 // { error } or { items, subtotal, sandwichCount }.
-function buildCateringOrder(rawItems) {
+function buildCateringOrder(rawItems, rawSides) {
   if (!Array.isArray(rawItems)) return { error: "Choose at least one sandwich." };
   const whole = (n) => (Number.isInteger(Number(n)) && Number(n) >= 0 ? Number(n) : NaN);
   const items = [];
@@ -186,11 +188,23 @@ function buildCateringOrder(rawItems) {
     }
   }
 
+  const sides = [];
+  for (const raw of Array.isArray(rawSides) ? rawSides : []) {
+    const s = CATERING_MENU.sides.find((x) => x.id === raw.id);
+    if (!s) return { error: "One of the sides you picked isn't on our menu." };
+    const qty = whole(raw.qty);
+    if (Number.isNaN(qty)) return { error: "Quantities must be whole numbers." };
+    if (qty === 0) continue;
+    if (qty > 10000) return { error: `The maximum is 10,000 per item. For larger orders, please call us.` };
+    sides.push({ id: s.id, name: s.name, price: s.price, qty });
+    subtotal += s.price * qty;
+  }
+
   if (items.length === 0) return { error: "Choose at least one sandwich." };
   if (sandwichCount < CATERING_MIN) {
     return { error: `Catering has a ${CATERING_MIN}-person minimum — please add ${CATERING_MIN - sandwichCount} more sandwich${CATERING_MIN - sandwichCount === 1 ? "" : "es"}.` };
   }
-  return { items, subtotal: Math.round(subtotal * 100) / 100, sandwichCount };
+  return { items, sides, subtotal: Math.round(subtotal * 100) / 100, sandwichCount };
 }
 
 // Same idea for a catering booking — one summary line item for the whole
@@ -203,6 +217,7 @@ async function pushCateringToClover(booking) {
       name: `${i.name}${i.comboQty ? ` (${i.comboQty} combo)` : ""}${i.dessertQty ? ` (${i.dessertQty} dessert)` : ""}${i.notes ? ` — NOTE: ${i.notes}` : ""}`,
       priceCents: Math.round((i.price * i.qty + 5 * i.comboQty + 5 * i.dessertQty) * 100),
     }));
+    for (const s of booking.sides || []) lineItems.push({ name: `${s.qty}× ${s.name}`, priceCents: Math.round(s.price * s.qty * 100) });
     if (booking.tax > 0) lineItems.push({ name: "Tax", priceCents: Math.round(booking.tax * 100) });
 
     const note = [
@@ -395,7 +410,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const { eventDate, eventType, eventAddress, notes } = body;
 
-      const built = buildCateringOrder(body.items);
+      const built = buildCateringOrder(body.items, body.sides);
       if (built.error) return sendJSON(res, 400, { error: built.error });
 
       if (!/^\d{4}-\d{2}-\d{2}$/.test(String(eventDate || ""))) return sendJSON(res, 400, { error: "Event date is required." });
@@ -419,6 +434,7 @@ const server = http.createServer(async (req, res) => {
       const booking = {
         ref: makeRefCode("CATER"),
         items: built.items,
+        sides: built.sides,
         guestCount: built.sandwichCount,
         subtotal,
         tax: 0,

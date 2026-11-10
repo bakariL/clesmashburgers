@@ -17,17 +17,18 @@ function cateringRecipients() {
   return list.length ? list : CATERING_NOTIFY_DEFAULT;
 }
 
-function itemsHtml(items) {
+function itemsHtml(items, sides) {
+  const sideLis = (sides || []).map((s) => `<li><strong>${esc(s.qty)}× ${esc(s.name)}</strong></li>`).join("");
   return (items || [])
     .map((i) => {
       const extras = [i.comboQty ? `${i.comboQty} as combo (+fries & drink)` : "", i.dessertQty ? `${i.dessertQty} with dessert` : ""].filter(Boolean).join(", ");
       return `<li><strong>${esc(i.qty)}× ${esc(i.name)}</strong>${extras ? ` — ${esc(extras)}` : ""}${i.notes ? `<br><em>Special request: ${esc(i.notes)}</em>` : ""}</li>`;
     })
-    .join("");
+    .join("") + sideLis;
 }
 
-function itemsText(items) {
-  return (items || []).map((i) => `${i.qty}x ${i.name}`).join(", ");
+function itemsText(items, sides) {
+  return [...(items || []), ...(sides || [])].map((i) => `${i.qty}x ${i.name}`).join(", ");
 }
 
 function fmtPhone(p) {
@@ -70,7 +71,7 @@ async function sendCateringTeamNotification(r) {
   const row = (k, v) => `<tr><td style="padding:6px 12px;font-weight:bold;vertical-align:top">${k}</td><td style="padding:6px 12px">${esc(v) || "—"}</td></tr>`;
   const html = `<h2>New catering booking — ${esc(r.ref)}</h2>
 <table style="border-collapse:collapse;font-family:sans-serif;font-size:15px">
-<tr><td style="padding:6px 12px;font-weight:bold;vertical-align:top">Order</td><td style="padding:6px 12px"><ul style="margin:0;padding-left:18px">${itemsHtml(r.items)}</ul></td></tr>
+<tr><td style="padding:6px 12px;font-weight:bold;vertical-align:top">Order</td><td style="padding:6px 12px"><ul style="margin:0;padding-left:18px">${itemsHtml(r.items, r.sides)}</ul></td></tr>
 ${row("Event title", r.eventTitle)}
 ${row("Event date", r.eventDate)}
 ${row("Requested drop off time", fmtTime(r.eventTime))}
@@ -97,12 +98,12 @@ async function sendCateringConfirmation(request) {
   // Team notification runs alongside the customer's messages, never blocking them.
   const teamDone = sendCateringTeamNotification(request);
 
-  const msg = `Your catering order (${itemsText(request.items)}) is booked for ${request.eventDate} at ${request.eventAddress}${request.eventTime ? ` (requested drop off: ${fmtTime(request.eventTime)})` : ""}. Estimated total: $${request.total.toFixed(2)} + tax. Someone will contact you in 24hrs.`;
+  const msg = `Your catering order (${itemsText(request.items, request.sides)}) is booked for ${request.eventDate} at ${request.eventAddress}${request.eventTime ? ` (requested drop off: ${fmtTime(request.eventTime)})` : ""}. Estimated total: $${request.total.toFixed(2)} + tax. Someone will contact you in 24hrs.`;
   const emailResult = await withRetry(`catering ${request.ref} customer email`, () =>
     notify.sendEmail(
       request.contact.email,
       `Booking confirmed — Cleveland Smash Burgers Catering`,
-      `<h2>You're booked, ${esc(request.contact.firstName || request.contact.name)}!</h2><p>Your catering order is booked for <strong>${esc(request.eventDate)}</strong> — ${esc(request.eventTitle)} — at ${esc(request.eventAddress)}.</p>${request.eventTime ? `<p>Requested drop off time: <strong>${esc(fmtTime(request.eventTime))}</strong></p>` : ""}<p>Your order:</p><ul>${itemsHtml(request.items)}</ul><p>Estimated total: $${request.total.toFixed(2)} (plus tax). Someone will contact you in 24hrs.</p><p>You paid $0 today — there's no cost to book.</p><p>Reference: <strong>${esc(request.ref)}</strong></p><p>Questions? Reply to this email or call (216) 971-1884.</p>`,
+      `<h2>You're booked, ${esc(request.contact.firstName || request.contact.name)}!</h2><p>Your catering order is booked for <strong>${esc(request.eventDate)}</strong> — ${esc(request.eventTitle)} — at ${esc(request.eventAddress)}.</p>${request.eventTime ? `<p>Requested drop off time: <strong>${esc(fmtTime(request.eventTime))}</strong></p>` : ""}<p>Your order:</p><ul>${itemsHtml(request.items, request.sides)}</ul><p>Estimated total: $${request.total.toFixed(2)} (plus tax). Someone will contact you in 24hrs.</p><p>You paid $0 today — there's no cost to book.</p><p>Reference: <strong>${esc(request.ref)}</strong></p><p>Questions? Reply to this email or call (216) 971-1884.</p>`,
       { replyTo: cateringRecipients()[0] }
     )
   );
