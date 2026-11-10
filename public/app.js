@@ -9,14 +9,13 @@ const FALLBACK_CATERING_MENU = {
     { id: "jive-turkey", name: "The Jive Turkey", price: 10 },
     { id: "q-dawg", name: "The Q Dawg", price: 8 },
   ],
+  minimum: 10,
   comboUpgrade: { price: 5, description: "Adds fries and a drink" },
   dessertAddOn: { price: 5, description: "Add a dessert" },
 };
 
 const FALLBACK_LOCATIONS = [
-  { id: "parma", name: "Parma", address: "6164 Broadview Rd, Parma, OH 44134", hours: "12:00 PM – 9:30 PM daily", phone: "(216) 555-0142" },
   { id: "cleveland", name: "Cleveland", address: "3915 Carnegie Ave, Cleveland, OH 44115", hours: "12:00 PM – 9:30 PM daily", phone: "(216) 555-0142" },
-  { id: "garfield-heights", name: "Garfield Heights", address: "4545 E. 131st St, Garfield Heights, OH 44105", hours: "12:00 PM – 9:30 PM daily", phone: "(216) 555-0142" },
 ];
 
 const state = {
@@ -25,13 +24,13 @@ const state = {
   lastCatering: JSON.parse(sessionStorage.getItem("csb_last_catering") || "null"),
   deferredInstallPrompt: null,
   kitchenAuthed: false,
+  openCompose: null,
+  composeDraft: {},
   kitchenCalYear: new Date().getFullYear(),
   kitchenCalMonth: new Date().getMonth(),
-  stripeEnabled: false,
-  stripePublishableKey: "",
 };
 
-const CATERING_STATUSES = ["pending_payment", "booked", "in_progress", "completed", "canceled"];
+const CATERING_STATUSES = ["booked", "in_progress", "completed", "canceled"];
 let kitchenPollTimer = null;
 
 function money(n) {
@@ -54,47 +53,17 @@ function showToast(msg) {
   toastTimer = setTimeout(() => el.remove(), 2200);
 }
 
-// Mounts Stripe's Embedded Checkout (card entry, Apple Pay, Google Pay)
-// directly into a container on the current page — the customer never
-// leaves the site. formEl is hidden while the payment form is shown; if
-// something goes wrong before Stripe's iframe takes over, we bring the
-// form back so the customer isn't stuck looking at a blank page.
-async function mountEmbeddedCheckout(clientSecret, containerId, formEl) {
-  const container = document.getElementById(containerId);
-  if (!container) return;
-
-  if (!window.Stripe) {
-    showToast("Payment form couldn't load — please try again.");
-    return;
-  }
-  if (!state.stripePublishableKey) {
-    showToast("Payment isn't fully configured yet — please try again shortly.");
-    return;
-  }
-
-  try {
-    if (formEl) formEl.style.display = "none";
-    container.style.display = "block";
-    container.innerHTML = `<p style="color:var(--steel); padding:20px 0;">Loading payment form…</p>`;
-
-    const stripe = window.Stripe(state.stripePublishableKey);
-    const checkout = await stripe.initEmbeddedCheckout({
-      fetchClientSecret: () => Promise.resolve(clientSecret),
-    });
-    container.innerHTML = "";
-    checkout.mount(`#${containerId}`);
-  } catch (err) {
-    container.style.display = "none";
-    if (formEl) formEl.style.display = "";
-    showToast("Couldn't load the payment form — please try again.");
-  }
-}
-
 // ---------------- Router ----------------
 
+function isAdminPath() {
+  return location.pathname === "/admin" || location.pathname.startsWith("/admin/");
+}
+
 function currentRoute() {
+  if (isAdminPath()) return "kitchen";
   const raw = (location.hash || "#/").replace("#", "").replace(/^\//, "");
-  return raw.split("?")[0] || "home";
+  const r = raw.split("?")[0] || "home";
+  return r === "kitchen" ? "home" : r; // the dashboard lives only at /admin
 }
 
 function currentQuery() {
@@ -125,16 +94,6 @@ async function init() {
     }
   } catch {
     // offline or API not running yet — fallback locations already in state
-  }
-  try {
-    const res = await fetch("/api/stripe-config");
-    if (res.ok) {
-      const data = await res.json();
-      state.stripeEnabled = Boolean(data.enabled);
-      state.stripePublishableKey = data.publishableKey || "";
-    }
-  } catch {
-    // offline or API not running yet — stays disabled, test-mode flow still works
   }
   registerServiceWorker();
   setupInstallPrompt();
@@ -176,7 +135,7 @@ function footer() {
         </div>
         <div>
           <h4>Find Us</h4>
-          <p>3 locations around Cleveland<br>12:00 PM – 9:30 PM daily<br><a href="#/locations">See all locations →</a></p>
+          <p>3915 Carnegie Ave<br>Cleveland, OH 44115<br>12:00 PM – 9:30 PM daily<br><a href="#/locations">Directions →</a></p>
         </div>
         <div>
           <h4>Connect</h4>
@@ -188,8 +147,6 @@ function footer() {
         <span>© ${new Date().getFullYear()} Cleveland Smash Burgers. Prototype build.</span>
         <span>
           <a href="#" id="installFooterBtn" style="color:var(--mustard);">Install the app</a>
-          &nbsp;·&nbsp;
-          <a href="#/kitchen" style="color:var(--steel);">Kitchen (staff)</a>
         </span>
       </div>
     </div>
@@ -207,6 +164,7 @@ function viewHome() {
         <p class="lede">Wagyu smash burgers, fresh-cut fries, and coke floats — order ahead for pickup or cater for an event.</p>
         <div class="hero-actions">
           <a href="${ORDER_URL}" target="_blank" rel="noopener" class="btn btn-primary">Order Now</a>
+          <a href="#/catering" class="btn btn-secondary">Catering</a>
         </div>
       </div>
     </div>
@@ -217,9 +175,9 @@ function viewHome() {
       <div class="section-head">
         <div>
           <h2 class="h-display">Visit Us</h2>
-          <p>Three locations around Cleveland.</p>
+          <p>3915 Carnegie Ave, Cleveland — 12:00 PM to 9:30 PM daily.</p>
         </div>
-        <a href="#/locations" class="btn btn-dark">All Locations</a>
+        <a href="#/locations" class="btn btn-dark">Get Directions</a>
       </div>
     </div>
   </section>
@@ -245,7 +203,7 @@ function viewHome() {
         </div>
       </div>
       <div class="install-card">
-        <div class="qr">SCAN OR TAP INSTALL</div>
+        <img class="app-icon" src="/icons/icon-192.png" alt="Cleveland Smash Burgers app icon" width="96" height="96">
         <div>
           <p style="margin:0 0 10px; font-size:0.95rem; color:#5c5c5c;">This site installs like a native app right from your browser: tap <strong>Get the App</strong> above, or use your browser's "Add to Home Screen" option. It'll launch full-screen with an icon on your home screen — no App Store or Play Store listing yet.</p>
           <button class="btn btn-dark" id="installInlineBtn">Install the App</button>
@@ -288,7 +246,7 @@ function viewCatering() {
     <div class="container">
       <div class="eyebrow" style="color:#f7d9da;">CATERING</div>
       <h1 class="h-display">FEEDING THE CROWD.</h1>
-      <p>Pick your sandwiches and quantities, choose your date, and pay online — you're on the calendar in a few minutes.</p>
+      <p>Pick your sandwiches and quantities, choose your date, and book your event in a few minutes. We'll follow up to confirm your details.</p>
     </div>
   </section>
 
@@ -300,7 +258,7 @@ function viewCatering() {
         <div class="section-head">
           <div>
             <h2 class="h-display">1. Build Your Order</h2>
-            <p>Combo upgrade is ${money(menu.comboUpgrade.price)} per sandwich (${menu.comboUpgrade.description.toLowerCase()}). Dessert is ${money(menu.dessertAddOn.price)} more.</p>
+            <p><strong>${menu.minimum || 10}-person minimum</strong> — at least ${menu.minimum || 10} sandwiches per order. Combo upgrade is ${money(menu.comboUpgrade.price)} per sandwich (${menu.comboUpgrade.description.toLowerCase()}). Dessert is ${money(menu.dessertAddOn.price)} more.</p>
           </div>
         </div>
         <div class="pkg-grid">
@@ -309,8 +267,9 @@ function viewCatering() {
 
         <div class="form-card" style="max-width:640px; margin-top:28px;">
           <div class="confirm-detail-card" style="margin:0 0 20px;">
+            <div class="row"><span>Sandwiches</span><span id="cCountPreview">0 / ${menu.minimum || 10} minimum</span></div>
             <div class="row"><span>Estimated total</span><span id="cTotalPreview">$0.00</span></div>
-            <div class="row" style="font-size:0.78rem; color:var(--steel);"><span>Tax calculated at checkout, added on top</span></div>
+            <div class="row" style="font-size:0.78rem; color:var(--steel);"><span>Estimate before tax. We'll confirm final pricing with you.</span></div>
           </div>
 
           <h2 class="h-display" style="font-size:1.3rem; margin:0 0 12px;">2. Event Details</h2>
@@ -362,11 +321,9 @@ function viewCatering() {
             <textarea id="cNotes" placeholder="Parking, timing, dietary notes, etc."></textarea>
           </div>
 
-          <button type="submit" class="btn btn-primary btn-block">Book &amp; Pay — ~<span id="cSubmitTotal">$0.00</span></button>
+          <button type="submit" class="btn btn-primary btn-block">Book This Event — est. <span id="cSubmitTotal">$0.00</span></button>
         </div>
       </form>
-
-      <div id="stripeCheckoutContainer" style="display:none; margin-top:20px;"></div>
 
       <p style="text-align:center; font-size:0.88rem; color:var(--steel); max-width:60ch; margin:18px auto 0;">
         Trouble booking, or need something outside this menu?
@@ -392,9 +349,10 @@ function renderCateringConfirmedDetail(req) {
         `).join("")}
         <div class="row"><span>Event date</span><span>${req.eventDate}</span></div>
         <div class="row"><span>Address</span><span>${req.eventAddress}</span></div>
-        <div class="row"><span>Total</span><span>${money(req.total)}</span></div>
+        <div class="row"><span>Estimated total (before tax)</span><span>${money(req.total)}</span></div>
       </div>
 
+      <p style="font-size:0.9rem;">Want food for yourself too? <a href="${ORDER_URL}" target="_blank" rel="noopener" style="color:var(--crust); font-weight:700;">Order now →</a></p>
       <p style="font-size:0.85rem; color:var(--steel);">Need to change anything? <a href="tel:+12165550142" style="color:var(--crust);">Call (216) 555-0142</a>.</p>
 
       <div class="hero-actions" style="justify-content:center;">
@@ -406,22 +364,6 @@ function renderCateringConfirmedDetail(req) {
 }
 
 function viewCateringConfirmed() {
-  const query = currentQuery();
-  const sessionId = query.get("session_id");
-  const ref = query.get("ref");
-
-  if (sessionId && ref) {
-    if (state.lastCatering && state.lastCatering.ref === ref && state.lastCatering.paid) {
-      return renderCateringConfirmedDetail(state.lastCatering);
-    }
-    return `
-    <section style="padding-top:80px;">
-      <div class="container confirm-wrap">
-        <p style="color:#5c5c5c;">Confirming your payment…</p>
-      </div>
-    </section>`;
-  }
-
   if (!state.lastCatering) {
     location.hash = "#/catering";
     return "";
@@ -435,20 +377,42 @@ function statusBadge(status) {
   return `<span class="status-badge status-${status}">${status.replace(/_/g, " ")}</span>`;
 }
 
+function adminToken() {
+  try { return localStorage.getItem("csb_admin_token") || ""; } catch { return ""; }
+}
+
+function adminFetch(url, opts = {}) {
+  return fetch(url, {
+    ...opts,
+    headers: { ...(opts.headers || {}), Authorization: `Bearer ${adminToken()}` },
+  });
+}
+
+function adminLogout() {
+  try { localStorage.removeItem("csb_admin_token"); } catch {}
+  state.kitchenAuthed = false;
+  clearInterval(kitchenPollTimer);
+  kitchenPollTimer = null;
+}
+
 function viewKitchen() {
   if (!state.kitchenAuthed) {
     return `
     <section style="padding-top:80px;">
       <div class="container" style="max-width:420px;">
-        <h2 class="h-display">Kitchen Login</h2>
-        <p style="color:#5c5c5c;">Staff only — enter the kitchen passcode to view catering bookings.</p>
+        <h2 class="h-display">Admin Login</h2>
+        <p style="color:#5c5c5c;">Authorized staff only.</p>
         <div id="kitchenLoginError"></div>
         <form id="kitchenLoginForm" class="form-card" novalidate>
           <div class="field">
-            <label for="kitchenPasscode">Passcode</label>
-            <input type="password" id="kitchenPasscode" autocomplete="off">
+            <label for="adminUser">Username</label>
+            <input type="text" id="adminUser" autocomplete="username" autocapitalize="none" spellcheck="false">
           </div>
-          <button type="submit" class="btn btn-primary btn-block">Enter</button>
+          <div class="field">
+            <label for="adminPass">Password</label>
+            <input type="password" id="adminPass" autocomplete="current-password">
+          </div>
+          <button type="submit" class="btn btn-primary btn-block">Log In</button>
         </form>
       </div>
     </section>`;
@@ -459,8 +423,8 @@ function viewKitchen() {
     <div class="container">
       <div class="section-head">
         <div>
-          <h2 class="h-display">Kitchen Board</h2>
-          <p>Live catering bookings — refreshes every few seconds.</p>
+          <h2 class="h-display">Catering Dashboard</h2>
+          <p>Every booking with full details and contact info. Updates automatically.</p>
         </div>
         <button class="btn btn-secondary" id="kitchenLogoutBtn" style="color:var(--ink); border-color:var(--steel);">Log Out</button>
       </div>
@@ -481,77 +445,140 @@ function viewKitchen() {
   </section>`;
 }
 
+function fmtDateTime(iso) {
+  try { return new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }); } catch { return iso || ""; }
+}
+
 function renderKitchenBoard(cateringRequests, cloverEnabled) {
   const cloverLine = (record) => {
     if (!cloverEnabled) return '';
     return record.cloverSynced
-      ? `<div style="color:var(--pickle); font-size:0.78rem; margin-top:4px;">✓ Synced to Clover</div>`
-      : `<div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
+      ? `<div style="color:var(--pickle); font-size:0.78rem; margin-top:8px;">✓ Synced to Clover</div>`
+      : `<div style="display:flex; align-items:center; gap:8px; margin-top:8px;">
            <span style="color:var(--crust); font-size:0.78rem;">⚠ Not synced to Clover</span>
            <button type="button" class="btn btn-dark btn-sm" data-resync-catering="${record.ref}">Retry</button>
          </div>`;
   };
 
+  const sorted = [...cateringRequests].sort((a, b) => {
+    const ca = a.status === "canceled" ? 1 : 0, cb = b.status === "canceled" ? 1 : 0;
+    if (ca !== cb) return ca - cb;
+    return String(a.eventDate).localeCompare(String(b.eventDate));
+  });
+
+  const composePanel = (r) => {
+    const d = state.composeDraft[r.ref] || {};
+    const subject = d.subject != null ? d.subject : `Your Cleveland Smash Burgers catering — ${r.eventDate}`;
+    const message = d.message != null ? d.message : `Hi ${r.contact.name.split(" ")[0]},\n\n`;
+    return `
+      <div class="compose-panel">
+        <div class="field"><label>To</label><input type="text" value="${escapeHtml(r.contact.email)}" disabled></div>
+        <div class="field"><label for="cs-${r.ref}">Subject</label><input type="text" id="cs-${r.ref}" data-compose-subject="${r.ref}" value="${escapeHtml(subject)}"></div>
+        <div class="field"><label for="cm-${r.ref}">Message</label><textarea id="cm-${r.ref}" rows="6" data-compose-message="${r.ref}">${escapeHtml(message)}</textarea></div>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="btn btn-primary btn-sm" data-compose-send="${r.ref}">Send Email</button>
+          <button type="button" class="btn btn-secondary btn-sm" style="color:var(--ink); border-color:var(--steel);" data-compose-cancel="${r.ref}">Cancel</button>
+        </div>
+        <p style="font-size:0.78rem; color:var(--steel); margin:8px 0 0;">Replies go to your operations inbox.</p>
+      </div>`;
+  };
+
+  const detail = (label, value) => value ? `<div class="kv"><span>${label}</span><span>${value}</span></div>` : "";
+
   return `
   <div>
-    <h3 class="h-display" style="font-size:1.1rem; margin-bottom:14px;">Catering (${cateringRequests.length})</h3>
-    ${cateringRequests.length === 0 ? '<p style="color:var(--steel);">No bookings yet.</p>' : cateringRequests.map(r => `
-      <div class="kitchen-card">
+    <h3 class="h-display" style="font-size:1.1rem; margin-bottom:14px;">Bookings (${cateringRequests.length})</h3>
+    ${sorted.length === 0 ? '<p style="color:var(--steel);">No bookings yet.</p>' : sorted.map(r => `
+      <div class="kitchen-card admin-card">
         <div class="kitchen-card-head">
-          <strong>${r.ref}</strong> ${statusBadge(r.status)}
+          <strong>${escapeHtml(r.ref)}</strong> ${statusBadge(r.status)}
         </div>
         <div class="kitchen-card-body">
-          <div>${escapeHtml(r.contact.name)} · ${escapeHtml(r.contact.phone)}</div>
-          <div>${r.eventDate} · ${money(r.total || 0)}</div>
-          <div style="color:var(--steel); font-size:0.8rem;">${escapeHtml(r.eventType)}${r.eventAddress ? ` · ${escapeHtml(r.eventAddress)}` : ''}</div>
-          <ul style="margin:8px 0 0; padding-left:18px; font-size:0.88rem;">
+          <div class="admin-grid">
+            <div>
+              <h4>Contact</h4>
+              ${detail("Name", escapeHtml(r.contact.name))}
+              ${detail("Phone", `<a href="tel:${escapeHtml(r.contact.phone)}">${escapeHtml(r.contact.phone)}</a>`)}
+              ${detail("Email", `<a href="mailto:${escapeHtml(r.contact.email)}">${escapeHtml(r.contact.email)}</a>`)}
+            </div>
+            <div>
+              <h4>Event</h4>
+              ${detail("Date", escapeHtml(r.eventDate))}
+              ${detail("Type", escapeHtml(r.eventType))}
+              ${detail("Address", escapeHtml(r.eventAddress))}
+              ${detail("Budget", escapeHtml(r.budgetNote))}
+              ${detail("Booked", fmtDateTime(r.createdAt))}
+            </div>
+          </div>
+
+          <h4>Order — ${r.guestCount || (r.items || []).reduce((n, i) => n + i.qty, 0)} sandwiches</h4>
+          <ul style="margin:0; padding-left:18px; font-size:0.9rem;">
             ${(r.items || []).map(i => `<li><strong>${i.qty}× ${escapeHtml(i.name)}</strong>${i.comboQty ? ` · ${i.comboQty} combo` : ''}${i.dessertQty ? ` · ${i.dessertQty} dessert` : ''}${i.notes ? `<br><em>Request: ${escapeHtml(i.notes)}</em>` : ''}</li>`).join('')}
           </ul>
-          ${r.notes ? `<div style="margin-top:6px; font-size:0.85rem;"><em>Notes: ${escapeHtml(r.notes)}</em></div>` : ''}
+          <div class="kv" style="margin-top:8px;"><span>Estimated total (before tax)</span><span><strong>${money(r.total || 0)}</strong></span></div>
+          ${r.notes ? `<h4>Customer notes</h4><div style="font-size:0.9rem;">${escapeHtml(r.notes)}</div>` : ''}
           ${cloverLine(r)}
+
+          ${(r.emails && r.emails.length) ? `
+            <h4>Emails sent from here</h4>
+            ${r.emails.map(e => `<div class="email-log"><strong>${escapeHtml(e.subject)}</strong> <span>· ${fmtDateTime(e.at)} · ${escapeHtml(e.status)}</span>
+              <div style="white-space:pre-wrap; color:#444; font-size:0.85rem; margin-top:4px;">${escapeHtml(e.message)}</div></div>`).join('')}` : ''}
         </div>
-        <select class="kitchen-status-select" data-catering-ref="${r.ref}">
-          ${CATERING_STATUSES.map(s => `<option value="${s}" ${s === r.status ? 'selected' : ''}>${s.replace(/_/g, ' ')}</option>`).join('')}
-        </select>
+
+        <div class="admin-actions">
+          <select class="kitchen-status-select" data-catering-ref="${r.ref}">
+            ${CATERING_STATUSES.map(st => `<option value="${st}" ${st === r.status ? 'selected' : ''}>${st.replace(/_/g, ' ')}</option>`).join('')}
+          </select>
+          <button type="button" class="btn btn-dark btn-sm" data-compose-open="${r.ref}">✉ Email customer</button>
+        </div>
+        ${state.openCompose === r.ref ? composePanel(r) : ''}
       </div>
     `).join('')}
   </div>`;
 }
 
-async function attemptKitchenLogin(passcode, silent) {
+async function attemptKitchenLogin(username, password) {
   try {
-    const res = await fetch("/api/kitchen/login", {
+    const res = await fetch("/api/admin/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ passcode }),
+      body: JSON.stringify({ username, password }),
     });
-    const data = await res.json();
-    if (data.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) {
+      try { localStorage.setItem("csb_admin_token", data.token); } catch {}
       state.kitchenAuthed = true;
-      if (passcode) localStorage.setItem("csb_kitchen_passcode", passcode);
       render();
-    } else if (!silent) {
+    } else {
       const box = document.getElementById("kitchenLoginError");
-      if (box) box.innerHTML = `<div class="form-error-banner">${data.error || "Incorrect passcode."}</div>`;
+      if (box) box.innerHTML = `<div class="form-error-banner">${escapeHtml(data.error || "Incorrect username or password.")}</div>`;
     }
   } catch {
-    if (!silent) showToast("Could not reach the server.");
+    showToast("Could not reach the server.");
+  }
+}
+
+async function checkAdminSession() {
+  if (!adminToken()) return false;
+  try {
+    const res = await adminFetch("/api/admin/session");
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 
 function startKitchenPolling() {
   clearInterval(kitchenPollTimer);
   const load = async () => {
-    const passcode = localStorage.getItem("csb_kitchen_passcode") || "";
     try {
       const [cateringRes, cloverRes, calRes] = await Promise.all([
-        fetch("/api/catering", { headers: { "x-kitchen-passcode": passcode } }),
-        fetch("/api/clover/status", { headers: { "x-kitchen-passcode": passcode } }),
-        fetch("/api/catering/calendar/staff", { headers: { "x-kitchen-passcode": passcode } }),
+        adminFetch("/api/catering"),
+        adminFetch("/api/clover/status"),
+        adminFetch("/api/catering/calendar/staff"),
       ]);
       if (cateringRes.status === 401 || calRes.status === 401) {
-        state.kitchenAuthed = false;
-        clearInterval(kitchenPollTimer);
+        adminLogout();
         render();
         return;
       }
@@ -559,17 +586,24 @@ function startKitchenPolling() {
       const cloverData = await cloverRes.json().catch(() => ({ enabled: false }));
       const calData = await calRes.json().catch(() => ({ booked: [], blocked: [] }));
 
+      // Don't re-render the list while someone is writing an email, or the draft would be wiped.
       const board = document.getElementById("kitchenBoard");
-      if (board) board.innerHTML = renderKitchenBoard(cateringData.requests || [], Boolean(cloverData.enabled));
-      attachKitchenStatusHandlers();
+      const typing = state.openCompose || (board && board.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName));
+      if (board && !typing) {
+        state.cateringCache = cateringData.requests || [];
+        state.cloverEnabled = Boolean(cloverData.enabled);
+        board.innerHTML = renderKitchenBoard(state.cateringCache, state.cloverEnabled);
+        attachKitchenStatusHandlers();
+      }
 
       renderKitchenCalendar(calData.booked || [], calData.blocked || []);
     } catch {
       // transient network hiccup — next poll will retry
     }
   };
+  state.reloadBoard = load;
   load();
-  kitchenPollTimer = setInterval(load, 5000);
+  kitchenPollTimer = setInterval(load, 10000);
 }
 
 function renderKitchenCalendar(booked, blocked) {
@@ -596,7 +630,6 @@ function renderKitchenCalendar(booked, blocked) {
   el.querySelectorAll("[data-kcal-day]").forEach(btn => {
     btn.addEventListener("click", async () => {
       const dateStr = btn.dataset.kcalDay;
-      const passcode = localStorage.getItem("csb_kitchen_passcode") || "";
       const bookedEntry = booked.find(b => b.date === dateStr);
       const blockedEntry = blocked.find(b => b.date === dateStr);
 
@@ -606,18 +639,18 @@ function renderKitchenCalendar(booked, blocked) {
       }
 
       if (blockedEntry) {
-        await fetch("/api/catering/calendar/unblock", {
+        await adminFetch("/api/catering/calendar/unblock", {
           method: "POST",
-          headers: { "Content-Type": "application/json", "x-kitchen-passcode": passcode },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ date: dateStr }),
         });
         showToast(`${dateStr} is open again`);
       } else {
         const reason = window.prompt(`Block ${dateStr}? Optional reason (e.g. "closed", "prepping for an event"):`, "");
         if (reason === null) return; // canceled the prompt
-        await fetch("/api/catering/calendar/block", {
+        await adminFetch("/api/catering/calendar/block", {
           method: "POST",
-          headers: { "Content-Type": "application/json", "x-kitchen-passcode": passcode },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ date: dateStr, reason }),
         });
         showToast(`${dateStr} blocked`);
@@ -626,28 +659,89 @@ function renderKitchenCalendar(booked, blocked) {
   });
 }
 
+function rerenderBoard() {
+  const board = document.getElementById("kitchenBoard");
+  if (!board) return;
+  board.innerHTML = renderKitchenBoard(state.cateringCache || [], Boolean(state.cloverEnabled));
+  attachKitchenStatusHandlers();
+}
+
 function attachKitchenStatusHandlers() {
   document.querySelectorAll("[data-catering-ref]").forEach(sel => {
     sel.addEventListener("change", async () => {
-      const passcode = localStorage.getItem("csb_kitchen_passcode") || "";
-      await fetch(`/api/catering/${sel.dataset.cateringRef}`, {
+      await adminFetch(`/api/catering/${sel.dataset.cateringRef}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json", "x-kitchen-passcode": passcode },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: sel.value }),
       });
-      showToast(`${sel.dataset.cateringRef} marked ${sel.value}`);
+      showToast(`${sel.dataset.cateringRef} marked ${sel.value.replace(/_/g, " ")}`);
+      if (state.reloadBoard) state.reloadBoard();
     });
   });
+
+  document.querySelectorAll("[data-compose-open]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      state.openCompose = btn.dataset.composeOpen;
+      rerenderBoard();
+      const ta = document.querySelector(`[data-compose-message="${state.openCompose}"]`);
+      if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+    });
+  });
+  document.querySelectorAll("[data-compose-cancel]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      delete state.composeDraft[btn.dataset.composeCancel];
+      state.openCompose = null;
+      rerenderBoard();
+    });
+  });
+  document.querySelectorAll("[data-compose-subject], [data-compose-message]").forEach(el => {
+    el.addEventListener("input", () => {
+      const ref = el.dataset.composeSubject || el.dataset.composeMessage;
+      state.composeDraft[ref] = {
+        subject: document.querySelector(`[data-compose-subject="${ref}"]`).value,
+        message: document.querySelector(`[data-compose-message="${ref}"]`).value,
+      };
+    });
+  });
+  document.querySelectorAll("[data-compose-send]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const ref = btn.dataset.composeSend;
+      const subject = document.querySelector(`[data-compose-subject="${ref}"]`).value.trim();
+      const message = document.querySelector(`[data-compose-message="${ref}"]`).value.trim();
+      if (!subject || !message) { showToast("Add a subject and a message first."); return; }
+      btn.disabled = true;
+      btn.textContent = "Sending…";
+      try {
+        const res = await adminFetch(`/api/admin/catering/${encodeURIComponent(ref)}/email`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subject, message }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          showToast(data.simulated ? "Email logged but NOT sent — email isn't configured on the server yet." : "Email sent ✓");
+          delete state.composeDraft[ref];
+          state.openCompose = null;
+          if (state.reloadBoard) await state.reloadBoard();
+        } else {
+          showToast(data.error || "Couldn't send that email.");
+          btn.disabled = false;
+          btn.textContent = "Send Email";
+        }
+      } catch {
+        showToast("Couldn't reach the server.");
+        btn.disabled = false;
+        btn.textContent = "Send Email";
+      }
+    });
+  });
+
   document.querySelectorAll("[data-resync-catering]").forEach(btn => {
     btn.addEventListener("click", async () => {
-      const passcode = localStorage.getItem("csb_kitchen_passcode") || "";
       btn.disabled = true;
       btn.textContent = "Syncing…";
       try {
-        const res = await fetch(`/api/catering/${btn.dataset.resyncCatering}/resync-clover`, {
-          method: "POST",
-          headers: { "x-kitchen-passcode": passcode },
-        });
+        const res = await adminFetch(`/api/catering/${btn.dataset.resyncCatering}/resync-clover`, { method: "POST" });
         const data = await res.json();
         showToast(data.synced ? `${btn.dataset.resyncCatering} synced to Clover` : "Still couldn't reach Clover — try again shortly");
       } catch {
@@ -667,8 +761,8 @@ function viewLocations() {
     <div class="container">
       <div class="section-head">
         <div>
-          <h2 class="h-display">Our Locations</h2>
-          <p>Three spots around Cleveland — stop by any of them.</p>
+          <h2 class="h-display">Find Us</h2>
+          <p>Come see us in Cleveland.</p>
         </div>
       </div>
       <div id="locationsList">
@@ -780,7 +874,10 @@ function render() {
     case "kitchen": body = viewKitchen(); break;
     default: body = viewHome();
   }
-  document.getElementById("app").innerHTML = nav() + body + footer();
+  // The private admin page gets no public nav/footer.
+  document.getElementById("app").innerHTML = isAdminPath()
+    ? `<header class="nav"><div class="nav-inner"><span class="brand-word" style="color:#fff;">CLEVELAND<span>&nbsp;SMASH&nbsp;BURGERS</span> <span style="font-size:0.7rem; opacity:0.7;">· ADMIN</span></span></div></header>` + body
+    : nav() + body + footer();
   window.scrollTo({ top: 0, behavior: "instant" in window ? "instant" : "auto" });
   attachHandlers(route);
 }
@@ -802,19 +899,23 @@ function attachHandlers(route) {
     const logoutBtn = document.getElementById("kitchenLogoutBtn");
     if (logoutBtn) {
       logoutBtn.addEventListener("click", () => {
-        state.kitchenAuthed = false;
-        localStorage.removeItem("csb_kitchen_passcode");
-        clearInterval(kitchenPollTimer);
+        adminLogout();
         render();
       });
     }
 
     const loginForm = document.getElementById("kitchenLoginForm");
     if (loginForm) {
-      attemptKitchenLogin(localStorage.getItem("csb_kitchen_passcode") || "", true);
+      // Already have a valid session from earlier? Go straight in.
+      checkAdminSession().then((ok) => {
+        if (ok && currentRoute() === "kitchen" && !state.kitchenAuthed) {
+          state.kitchenAuthed = true;
+          render();
+        }
+      });
       loginForm.addEventListener("submit", (e) => {
         e.preventDefault();
-        attemptKitchenLogin(document.getElementById("kitchenPasscode").value, false);
+        attemptKitchenLogin(document.getElementById("adminUser").value.trim(), document.getElementById("adminPass").value);
       });
     } else {
       startKitchenPolling();
@@ -838,6 +939,11 @@ function attachHandlers(route) {
           if (el) el.textContent = qtys[m.id][k];
         });
       });
+      const count = menu.sandwiches.reduce((n, m) => n + qtys[m.id].qty, 0);
+      const min = menu.minimum || 10;
+      const countEl = document.getElementById("cCountPreview");
+      countEl.textContent = count >= min ? `${count} ✓` : `${count} / ${min} minimum`;
+      countEl.style.color = count >= min ? "var(--pickle)" : "var(--crust)";
       document.getElementById("cTotalPreview").textContent = money(orderTotal());
       document.getElementById("cSubmitTotal").textContent = money(orderTotal());
     };
@@ -937,8 +1043,10 @@ function attachHandlers(route) {
         },
       };
 
-      if (payload.items.length === 0) {
-        errorBox.innerHTML = `<div class="form-error-banner">Please choose at least one sandwich.</div>`;
+      const totalSandwiches = payload.items.reduce((n, i) => n + i.qty, 0);
+      const minSandwiches = menu.minimum || 10;
+      if (totalSandwiches < minSandwiches) {
+        errorBox.innerHTML = `<div class="form-error-banner">Catering has a ${minSandwiches}-person minimum — please add ${minSandwiches - totalSandwiches} more sandwich${minSandwiches - totalSandwiches === 1 ? "" : "es"}.</div>`;
         errorBox.scrollIntoView({ behavior: "smooth", block: "center" });
         return;
       }
@@ -953,7 +1061,7 @@ function attachHandlers(route) {
 
       const submitBtn = e.target.querySelector("button[type=submit]");
       submitBtn.disabled = true;
-      submitBtn.textContent = "Processing…";
+      submitBtn.textContent = "Booking…";
 
       try {
         const res = await fetch("/api/catering", {
@@ -964,18 +1072,13 @@ function attachHandlers(route) {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Something went wrong.");
 
-        if (data.clientSecret) {
-          await mountEmbeddedCheckout(data.clientSecret, "stripeCheckoutContainer", e.target);
-          return;
-        }
-
         state.lastCatering = data.request;
         sessionStorage.setItem("csb_last_catering", JSON.stringify(data.request));
         location.hash = `#/catering-confirmed?ref=${data.request.ref}`;
       } catch (err) {
         errorBox.innerHTML = `<div class="form-error-banner">${err.message}</div>`;
         submitBtn.disabled = false;
-        submitBtn.innerHTML = `Book &amp; Pay — ~${document.getElementById("cSubmitTotal").textContent}`;
+        submitBtn.innerHTML = `Book This Event — est. ${document.getElementById("cSubmitTotal").textContent}`;
         // If someone else just took this date, refresh the calendar so
         // it shows as taken instead of leaving it looking available.
         if (err.message.toLowerCase().includes("already booked")) {
@@ -992,25 +1095,6 @@ function attachHandlers(route) {
     });
   }
 
-  if (route === "catering-confirmed") {
-    const query = currentQuery();
-    const sessionId = query.get("session_id");
-    const ref = query.get("ref");
-    const alreadyHave = state.lastCatering && state.lastCatering.ref === ref && state.lastCatering.paid;
-
-    if (sessionId && ref && !alreadyHave) {
-      fetch(`/api/catering/${encodeURIComponent(ref)}/verify-payment?session_id=${encodeURIComponent(sessionId)}`)
-        .then(r => r.json())
-        .then(data => {
-          if (data.request) {
-            state.lastCatering = data.request;
-            sessionStorage.setItem("csb_last_catering", JSON.stringify(data.request));
-          }
-          if (currentRoute() === "catering-confirmed") render();
-        })
-        .catch(() => showToast("Could not confirm payment — contact us with your reference code."));
-    }
-  }
 }
 
 // ---------------- PWA install ----------------

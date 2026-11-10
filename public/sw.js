@@ -11,7 +11,7 @@
 // that: online visitors always get the current deploy, and the cache is
 // purely an offline fallback.
 
-const CACHE = "csb-shell-v3"; // bumped so every existing browser drops the old (cache-first) cache
+const CACHE = "csb-shell-v4"; // bumped so every existing browser drops the old (cache-first) cache
 const SHELL = ["/", "/styles.css", "/app.js", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
@@ -31,7 +31,7 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   // Never cache API calls — always go to the network for live data.
-  if (request.url.includes("/api/")) return;
+  if (request.url.includes("/api/") || new URL(request.url).pathname.startsWith("/admin")) return;
 
   event.respondWith(
     fetch(request)

@@ -1,6 +1,6 @@
 // Cleveland Smash Burgers — server
 // Still zero npm dependencies: `node server.js` is all you need, even with
-// payments/SMS/email wired in — those talk to Stripe/Twilio/Resend over
+// SMS/email wired in — those talk to Twilio/Resend over
 // plain REST calls (fetch), not their SDKs.
 
 const http = require("http");
@@ -12,7 +12,6 @@ const { loadEnv } = require("./env");
 loadEnv();
 
 const db = require("./db");
-const payments = require("./payments");
 const notify = require("./notify");
 const notifications = require("./notifications");
 const clover = require("./clover");
@@ -78,6 +77,7 @@ function makeRefCode(prefix) {
 // upgrade any of them to a combo (+$5, adds fries and a drink) or add a
 // dessert (+$5). Sandwiches take a special-request note.
 const CATERING_MENU = {
+  minimum: 10, // total sandwiches per catering order
   sandwiches: [
     { id: "cleveland-classic", name: "The Cleveland Classic", price: 10 },
     { id: "jive-turkey", name: "The Jive Turkey", price: 10 },
@@ -87,18 +87,11 @@ const CATERING_MENU = {
   dessertAddOn: { price: 5, description: "Add a dessert" },
 };
 
-const CATERING_STATUSES = ["pending_payment", "booked", "in_progress", "completed", "canceled"];
+const CATERING_STATUSES = ["booked", "in_progress", "completed", "canceled"];
 
 
-// Our 3 storefronts — fixed locations, not a rotating pop-up schedule.
+// Our storefront.
 const LOCATIONS = [
-  {
-    id: "parma",
-    name: "Parma",
-    address: "6164 Broadview Rd, Parma, OH 44134",
-    hours: "12:00 PM – 9:30 PM daily",
-    phone: "(216) 555-0142",
-  },
   {
     id: "cleveland",
     name: "Cleveland",
@@ -106,31 +99,67 @@ const LOCATIONS = [
     hours: "12:00 PM – 9:30 PM daily",
     phone: "(216) 555-0142",
   },
-  {
-    id: "garfield-heights",
-    name: "Garfield Heights",
-    address: "4545 E. 131st St, Garfield Heights, OH 44105",
-    hours: "12:00 PM – 9:30 PM daily",
-    phone: "(216) 555-0142",
-  },
 ];
 
-function kitchenAuthorized(req) {
-  const configured = process.env.KITCHEN_PASSWORD;
-  if (!configured) return true; // dev mode — no passcode set
-  return req.headers["x-kitchen-passcode"] === configured;
+// Catering minimum: total sandwiches (one per guest).
+const CATERING_MIN = 10;
+
+// ---- Admin auth: ONE credential, set in env (ADMIN_USERNAME / ADMIN_PASSWORD) ----
+// Login returns a signed, expiring token the dashboard sends as
+// "Authorization: Bearer <token>". If the env vars aren't set the admin
+// area is LOCKED (never open).
+const ADMIN_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+const loginFailures = new Map(); // ip -> { count, until }
+
+function adminConfigured() {
+  return Boolean(process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD);
 }
 
-const STRIPE_KEY_MISSING = { error: "Online payment isn't available right now. Please call the shop to order." };
+function adminKey() {
+  return crypto
+    .createHash("sha256")
+    .update(`${process.env.ADMIN_SESSION_SECRET || ""}|${process.env.ADMIN_USERNAME}|${process.env.ADMIN_PASSWORD}`)
+    .digest();
+}
+
+function safeEqual(a, b) {
+  const ha = crypto.createHash("sha256").update(String(a)).digest();
+  const hb = crypto.createHash("sha256").update(String(b)).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
+function signAdminToken() {
+  const payload = Buffer.from(JSON.stringify({ exp: Date.now() + ADMIN_TOKEN_TTL_MS })).toString("base64url");
+  const sig = crypto.createHmac("sha256", adminKey()).update(payload).digest("base64url");
+  return `${payload}.${sig}`;
+}
+
+function kitchenAuthorized(req) {
+  if (!adminConfigured()) return false;
+  const header = req.headers["authorization"] || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  const [payload, sig] = token.split(".");
+  if (!payload || !sig) return false;
+  const expected = crypto.createHmac("sha256", adminKey()).update(payload).digest("base64url");
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return false;
+  try {
+    return JSON.parse(Buffer.from(payload, "base64url").toString()).exp > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+function clientIp(req) {
+  return String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
+}
 
 // Validates the customer's catering selection against CATERING_MENU and
 // prices it on the server (never trust prices from the browser). Returns
-// { error } or { items, subtotal, sandwichCount, stripeLines }.
+// { error } or { items, subtotal, sandwichCount }.
 function buildCateringOrder(rawItems) {
   if (!Array.isArray(rawItems)) return { error: "Choose at least one sandwich." };
   const whole = (n) => (Number.isInteger(Number(n)) && Number(n) >= 0 ? Number(n) : NaN);
   const items = [];
-  const stripeLines = [];
   let subtotal = 0;
   let sandwichCount = 0;
 
@@ -149,19 +178,19 @@ function buildCateringOrder(rawItems) {
     items.push({ id: m.id, name: m.name, price: m.price, qty, comboQty, dessertQty, notes: String(raw.notes || "").trim().slice(0, 300) });
     sandwichCount += qty;
     subtotal += m.price * qty;
-    stripeLines.push({ name: m.name, unitAmountCents: Math.round(m.price * 100), quantity: qty });
     if (comboQty) {
       subtotal += CATERING_MENU.comboUpgrade.price * comboQty;
-      stripeLines.push({ name: `Combo upgrade (fries + drink) — ${m.name}`, unitAmountCents: Math.round(CATERING_MENU.comboUpgrade.price * 100), quantity: comboQty });
     }
     if (dessertQty) {
       subtotal += CATERING_MENU.dessertAddOn.price * dessertQty;
-      stripeLines.push({ name: `Dessert add-on — ${m.name}`, unitAmountCents: Math.round(CATERING_MENU.dessertAddOn.price * 100), quantity: dessertQty });
     }
   }
 
   if (items.length === 0) return { error: "Choose at least one sandwich." };
-  return { items, subtotal: Math.round(subtotal * 100) / 100, sandwichCount, stripeLines };
+  if (sandwichCount < CATERING_MIN) {
+    return { error: `Catering has a ${CATERING_MIN}-person minimum — please add ${CATERING_MIN - sandwichCount} more sandwich${CATERING_MIN - sandwichCount === 1 ? "" : "es"}.` };
+  }
+  return { items, subtotal: Math.round(subtotal * 100) / 100, sandwichCount };
 }
 
 // Same idea for a catering booking — one summary line item for the whole
@@ -241,21 +270,55 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 200, { enabled: clover.isCloverConfigured() });
   }
 
-  // ---- Stripe: public config (publishable key is safe to expose) ----
-  if (url.pathname === "/api/stripe-config" && req.method === "GET") {
-    return sendJSON(res, 200, {
-      enabled: payments.isStripeConfigured(),
-      publishableKey: payments.getPublishableKey(),
-    });
+  // ---- Admin login (single credential) ----
+  if (url.pathname === "/api/admin/login" && req.method === "POST") {
+    if (!adminConfigured()) {
+      return sendJSON(res, 503, { error: "Admin login isn't set up yet. Set ADMIN_USERNAME and ADMIN_PASSWORD in the server environment." });
+    }
+    const ip = clientIp(req);
+    const rec = loginFailures.get(ip);
+    if (rec && rec.until > Date.now()) {
+      return sendJSON(res, 429, { error: "Too many attempts. Try again in a few minutes." });
+    }
+    const body = await readBody(req).catch(() => ({}));
+    const ok = safeEqual(body.username || "", process.env.ADMIN_USERNAME) & safeEqual(body.password || "", process.env.ADMIN_PASSWORD);
+    if (!ok) {
+      const count = ((rec && rec.count) || 0) + 1;
+      loginFailures.set(ip, { count, until: count >= 5 ? Date.now() + 15 * 60 * 1000 : 0 });
+      return sendJSON(res, 401, { error: "Incorrect username or password." });
+    }
+    loginFailures.delete(ip);
+    return sendJSON(res, 200, { ok: true, token: signAdminToken(), expiresInMs: ADMIN_TOKEN_TTL_MS });
   }
 
-  // ---- Kitchen auth ----
-  if (url.pathname === "/api/kitchen/login" && req.method === "POST") {
+  // ---- Admin: who am I / is my token still good ----
+  if (url.pathname === "/api/admin/session" && req.method === "GET") {
+    return sendJSON(res, kitchenAuthorized(req) ? 200 : 401, { ok: kitchenAuthorized(req) });
+  }
+
+  // ---- Admin: email a customer from the dashboard ----
+  if (parts[0] === "api" && parts[1] === "admin" && parts[2] === "catering" && parts[4] === "email" && parts.length === 5 && req.method === "POST") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+    const ref = decodeURIComponent(parts[3]);
+    const booking = await db.getCateringRequest(ref);
+    if (!booking) return sendJSON(res, 404, { error: "Booking not found." });
     const body = await readBody(req).catch(() => ({}));
-    const configured = process.env.KITCHEN_PASSWORD;
-    if (!configured) return sendJSON(res, 200, { ok: true, open: true });
-    if (body.passcode === configured) return sendJSON(res, 200, { ok: true, open: false });
-    return sendJSON(res, 401, { ok: false, open: false, error: "Incorrect passcode." });
+    const subject = String(body.subject || "").trim().slice(0, 200);
+    const message = String(body.message || "").trim().slice(0, 5000);
+    if (!subject || !message) return sendJSON(res, 400, { error: "A subject and a message are required." });
+
+    const result = await notifications.sendCustomerEmail(booking, subject, message);
+    const entry = {
+      at: new Date().toISOString(),
+      to: booking.contact.email,
+      subject,
+      message,
+      status: result.error ? "failed" : result.simulated ? "not sent (email not configured)" : "sent",
+      error: result.error || undefined,
+    };
+    const updated = await db.updateCateringRequest(ref, { emails: [...(booking.emails || []), entry] });
+    if (result.error) return sendJSON(res, 502, { error: `Email failed: ${result.error}`, request: updated });
+    return sendJSON(res, 200, { request: updated, simulated: Boolean(result.simulated) });
   }
 
   // ---- Catering: menu (public) ----
@@ -292,7 +355,7 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 200, { removed });
   }
 
-  // ---- Catering: book + pay ----
+  // ---- Catering: book an event ----
   if (url.pathname === "/api/catering" && req.method === "POST") {
     try {
       const body = await readBody(req);
@@ -305,17 +368,12 @@ const server = http.createServer(async (req, res) => {
       if (!(await isDateAvailable(eventDate))) {
         return sendJSON(res, 409, { error: "That date is already booked — please choose another." });
       }
-      if (payments.isStripeConfigured() && !payments.getPublishableKey()) {
-        console.error("Booking blocked: STRIPE_SECRET_KEY is set but STRIPE_PUBLISHABLE_KEY is missing.");
-        return sendJSON(res, 503, STRIPE_KEY_MISSING);
-      }
       if (!eventAddress) return sendJSON(res, 400, { error: "Event address is required." });
       if (!contact || !contact.name || !contact.email || !contact.phone) {
         return sendJSON(res, 400, { error: "Name, email, and phone are required." });
       }
 
-      const stripeOn = payments.isStripeConfigured();
-      const subtotal = built.subtotal; // pre-checkout estimate; verify-payment overwrites with Stripe's real total+tax
+      const subtotal = built.subtotal; // estimate before tax; no online payment
 
       const booking = {
         ref: makeRefCode("CATER"),
@@ -330,76 +388,21 @@ const server = http.createServer(async (req, res) => {
         budgetNote: String(budgetNote || "").slice(0, 300),
         notes: String(notes || "").slice(0, 1000),
         contact,
-        status: stripeOn ? "pending_payment" : "booked",
-        paid: !stripeOn,
+        status: "booked",
         createdAt: new Date().toISOString(),
       };
 
       await db.createCateringRequest(booking);
-
-      // Email the address they typed right away ("Book & Pay" was hit) —
-      // not awaited so it never slows the checkout; never throws.
-      if (stripeOn) notifications.sendCateringStarted(booking);
-
-      if (!stripeOn) {
-        await notifications.sendCateringConfirmation(booking);
-        const synced = await pushCateringToClover(booking);
-        const finalBooking = await db.updateCateringRequest(booking.ref, { cloverSynced: synced });
-        return sendJSON(res, 201, { request: finalBooking || booking });
-      }
-
-      try {
-        const origin = requestOrigin(req);
-        const session = await payments.createCheckoutSession({
-          lineItems: built.stripeLines.map((l) => ({ ...l, taxCode: payments.FOOD_TAX_CODE })),
-          returnUrl: `${origin}/#/catering-confirmed?ref=${booking.ref}&session_id={CHECKOUT_SESSION_ID}`,
-          customerEmail: contact.email,
-          metadata: { catering_ref: booking.ref },
-        });
-        await db.updateCateringRequest(booking.ref, { stripeSessionId: session.id });
-        return sendJSON(res, 201, { request: booking, clientSecret: session.client_secret });
-      } catch (e) {
-        console.error("Stripe checkout session failed:", e.message);
-        await db.updateCateringRequest(booking.ref, { status: "canceled", paid: false, paymentNote: "Stripe error: " + e.message });
-        return sendJSON(res, 502, { error: "We couldn't start payment right now. Please try again in a minute or call the shop. You were not charged." });
-      }
+      await notifications.sendCateringConfirmation(booking);
+      const synced = await pushCateringToClover(booking);
+      const finalBooking = await db.updateCateringRequest(booking.ref, { cloverSynced: synced });
+      return sendJSON(res, 201, { request: finalBooking || booking });
     } catch (e) {
       return sendJSON(res, 400, { error: "Couldn't read that booking. " + e.message });
     }
   }
 
-  // ---- Catering: verify payment after Stripe redirect ----
-  if (parts[0] === "api" && parts[1] === "catering" && parts[3] === "verify-payment" && req.method === "GET") {
-    const ref = decodeURIComponent(parts[2]);
-    const sessionId = url.searchParams.get("session_id");
-    const booking = await db.getCateringRequest(ref);
-    if (!booking) return sendJSON(res, 404, { error: "Booking not found." });
-    if (booking.paid) return sendJSON(res, 200, { request: booking });
-    if (!sessionId) return sendJSON(res, 400, { error: "Missing session id." });
-
-    try {
-      const session = await payments.retrieveCheckoutSession(sessionId);
-      if (session.payment_status === "paid") {
-        const updated = await db.updateCateringRequest(ref, {
-          status: "booked",
-          paid: true,
-          stripePaymentStatus: session.payment_status,
-          subtotal: Math.round((session.amount_subtotal || 0)) / 100,
-          tax: Math.round((session.total_details?.amount_tax || 0)) / 100,
-          total: Math.round((session.amount_total || 0)) / 100,
-        });
-        await notifications.sendCateringConfirmation(updated);
-        const synced = await pushCateringToClover(updated);
-        const withSync = await db.updateCateringRequest(ref, { cloverSynced: synced });
-        return sendJSON(res, 200, { request: withSync || updated });
-      }
-      return sendJSON(res, 200, { request: booking, paymentPending: true });
-    } catch (e) {
-      return sendJSON(res, 502, { error: "Could not verify payment: " + e.message });
-    }
-  }
-
-  // ---- Catering: single (used after Stripe redirect / kitchen detail) ----
+  // ---- Catering: single (kitchen detail) ----
   if (parts[0] === "api" && parts[1] === "catering" && parts.length === 3 && req.method === "GET") {
     const ref = decodeURIComponent(parts[2]);
     const booking = await db.getCateringRequest(ref);
@@ -444,6 +447,14 @@ const server = http.createServer(async (req, res) => {
 
   // ---- static files ----
   if (req.method === "GET") {
+    if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
+      // private dashboard: serve the app shell, keep it out of search engines
+      return fs.readFile(path.join(PUBLIC_DIR, "index.html"), (e, data) => {
+        if (e) { res.writeHead(404); return res.end("Not found"); }
+        res.writeHead(200, { "Content-Type": MIME[".html"], "X-Robots-Tag": "noindex, nofollow", "Cache-Control": "no-store" });
+        res.end(data);
+      });
+    }
     let filePath = url.pathname === "/" ? "/index.html" : url.pathname;
     filePath = path.join(PUBLIC_DIR, decodeURIComponent(filePath));
 
@@ -478,12 +489,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Cleveland Smash Burgers running at http://localhost:${PORT}`);
-  console.log(`Payments: ${payments.isStripeConfigured() ? "Stripe live (test/live key set)" : "test mode (no STRIPE_SECRET_KEY set)"}`);
-  if (payments.isStripeConfigured() !== Boolean(payments.getPublishableKey())) {
-    console.warn("\n!!! STRIPE MISCONFIGURED: need BOTH STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY (same Stripe account). Checkout is disabled until fixed. !!!\n");
-  }
   console.log(`Catering notifications go to: ${notifications.cateringRecipients().join(", ")}`);
   console.log(`SMS: ${notify.smsConfigured() ? "Twilio live" : "console-logged (no Twilio env vars set)"}`);
   console.log(`Email: ${notify.emailConfigured() ? "Resend live" : "console-logged (no RESEND_API_KEY set)"}`);
-  console.log(`Kitchen board: ${process.env.KITCHEN_PASSWORD ? "passcode required" : "open, no passcode set"}`);
+  console.log(`Admin dashboard (/admin): ${adminConfigured() ? "login required" : "LOCKED — set ADMIN_USERNAME and ADMIN_PASSWORD to enable"}`);
 });

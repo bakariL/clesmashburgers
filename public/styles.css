@@ -696,7 +696,6 @@ footer {
 }
 /* Kitchen-only status colors — a functional grey/red/black ramp, not
    brand chrome, chosen so staff can tell states apart at a glance. */
-.status-badge.status-pending_payment { background: var(--crust); color: #fff; }
 .status-badge.status-received, .status-badge.status-new { background: #2b2b2b; color: #fff; }
 .status-badge.status-in_progress, .status-badge.status-contacted { background: #6e6e6e; color: #fff; }
 .status-badge.status-ready, .status-badge.status-booked { background: var(--char); color: #fff; }
@@ -740,3 +739,21 @@ footer {
 .qty-ctl { display:flex; align-items:center; gap:10px; flex-shrink:0; }
 .qty-ctl .btn-sm { min-width:36px; min-height:36px; padding:0; line-height:1; font-size:1.1rem; }
 .qty-val { min-width:24px; text-align:center; font-weight:700; }
+
+/* Home: install card app icon */
+.app-icon { width:96px; height:96px; border-radius:22px; box-shadow:0 4px 14px rgba(0,0,0,.25); flex-shrink:0; object-fit:cover; }
+
+/* Admin dashboard */
+.admin-card .kitchen-card-body h4 { margin:14px 0 6px; font-size:0.78rem; letter-spacing:.08em; text-transform:uppercase; color:var(--steel); }
+.admin-card .kitchen-card-body h4:first-child { margin-top:0; }
+.admin-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 24px; }
+.kv { display:flex; gap:10px; justify-content:space-between; font-size:0.9rem; padding:2px 0; }
+.kv > span:first-child { color:var(--steel); flex-shrink:0; }
+.kv > span:last-child { text-align:right; overflow-wrap:anywhere; }
+.kv a { color:var(--crust); }
+.admin-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:12px; }
+.compose-panel { margin-top:14px; padding-top:14px; border-top:1px solid #e3e3e3; }
+.compose-panel textarea { min-height:140px; }
+.email-log { border-left:3px solid var(--crust); padding:4px 0 4px 10px; margin:8px 0; font-size:0.88rem; }
+.email-log span { color:var(--steel); font-size:0.78rem; }
+@media (max-width: 640px) { .admin-grid { grid-template-columns:1fr; } }

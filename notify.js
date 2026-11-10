@@ -41,7 +41,7 @@ async function sendSMS(to, body) {
   }
 }
 
-async function sendEmail(to, subject, html) {
+async function sendEmail(to, subject, html, opts = {}) {
   if (!emailConfigured()) {
     console.log(`[DEV] Would email ${to} — "${subject}"`);
     return { simulated: true };
@@ -55,7 +55,7 @@ async function sendEmail(to, subject, html) {
         Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ from, to, subject, html }),
+      body: JSON.stringify({ from, to, subject, html, ...(opts.replyTo ? { reply_to: opts.replyTo } : {}) }),
     });
     const data = await res.json();
     if (!res.ok) {

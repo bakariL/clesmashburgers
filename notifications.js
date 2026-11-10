@@ -69,7 +69,7 @@ ${row("Contact email", r.contact.email)}
 ${row("Contact phone", r.contact.phone)}
 ${row("Subtotal", "$" + Number(r.subtotal).toFixed(2))}
 ${row("Tax", "$" + Number(r.tax || 0).toFixed(2))}
-${row("Total paid", "$" + Number(r.total).toFixed(2))}
+${row("Estimated total (before tax)", "$" + Number(r.total).toFixed(2))}
 ${row("Reference", r.ref)}
 </table>`;
   return withRetry(`catering ${r.ref} team email`, () =>
@@ -77,28 +77,16 @@ ${row("Reference", r.ref)}
   );
 }
 
-// Sent the moment the customer hits "Book & Pay", before payment completes.
-// Goes to whatever address they typed in the email field.
-async function sendCateringStarted(r) {
-  return withRetry(`catering ${r.ref} started email`, () =>
-    notify.sendEmail(
-      r.contact.email,
-      `We got your catering request — Cleveland Smash Burgers`,
-      `<h2>Thanks, ${esc(r.contact.name)}!</h2><p>We received your catering request for <strong>${esc(r.eventDate)}</strong>:</p><ul>${itemsHtml(r.items)}</ul><p>Your date is held once payment is complete — you'll get a booking confirmation right after you pay.</p><p>Reference: <strong>${esc(r.ref)}</strong></p>`
-    )
-  );
-}
-
 // Customer confirmation + team notification.
 async function sendCateringConfirmation(request) {
   await sendCateringTeamNotification(request);
 
-  const msg = `Your catering order (${itemsText(request.items)}) is booked for ${request.eventDate} at ${request.eventAddress}. Total: $${request.total.toFixed(2)}.`;
+  const msg = `Your catering order (${itemsText(request.items)}) is booked for ${request.eventDate} at ${request.eventAddress}. Estimated total: $${request.total.toFixed(2)} + tax. We'll be in touch to confirm your details.`;
   await withRetry(`catering ${request.ref} customer email`, () =>
     notify.sendEmail(
       request.contact.email,
       `Booking confirmed — Cleveland Smash Burgers Catering`,
-      `<h2>You're booked, ${esc(request.contact.name)}!</h2><p>Your catering order is booked for <strong>${esc(request.eventDate)}</strong> at ${esc(request.eventAddress)}:</p><ul>${itemsHtml(request.items)}</ul><p>Total: $${request.total.toFixed(2)}</p><p>Reference: <strong>${esc(request.ref)}</strong></p><p>Questions? Reply to this email or call (216) 555-0142.</p>`
+      `<h2>You're booked, ${esc(request.contact.name)}!</h2><p>Your catering order is booked for <strong>${esc(request.eventDate)}</strong> at ${esc(request.eventAddress)}:</p><ul>${itemsHtml(request.items)}</ul><p>Estimated total: $${request.total.toFixed(2)} (plus tax). We'll be in touch to confirm your details.</p><p>Reference: <strong>${esc(request.ref)}</strong></p><p>Questions? Reply to this email or call (216) 555-0142.</p>`
     )
   );
   if (request.contact.phone) {
@@ -108,4 +96,16 @@ async function sendCateringConfirmation(request) {
   }
 }
 
-module.exports = { sendCateringConfirmation, sendCateringStarted, sendCateringTeamNotification, cateringRecipients };
+// Free-form email from the admin dashboard to the booking's contact.
+// Plain text in, simple HTML out; replies go to the ops inbox.
+async function sendCustomerEmail(booking, subject, message) {
+  const html = `<div style="font-family:sans-serif;font-size:15px;line-height:1.5">${esc(message).replace(/\n/g, "<br>")}<hr style="margin-top:24px;border:none;border-top:1px solid #ddd"><p style="color:#666;font-size:13px">Cleveland Smash Burgers · Catering reference ${esc(booking.ref)}</p></div>`;
+  const replyTo = process.env.ADMIN_REPLY_TO || cateringRecipients()[0];
+  try {
+    return await notify.sendEmail(booking.contact.email, subject, html, { replyTo });
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+module.exports = { sendCustomerEmail, sendCateringConfirmation, sendCateringTeamNotification, cateringRecipients };
