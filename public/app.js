@@ -15,7 +15,7 @@ const FALLBACK_CATERING_MENU = {
 };
 
 const FALLBACK_LOCATIONS = [
-  { id: "cleveland", name: "Cleveland", address: "3915 Carnegie Ave, Cleveland, OH 44115", hours: "12:00 PM – 9:30 PM daily", phone: "(216) 555-0142" },
+  { id: "cleveland", name: "Cleveland", address: "3915 Carnegie Ave, Cleveland, OH 44115", hours: "Mon–Thu 11am–11pm\nFri–Sat 11am–2am\nSun 12:30pm–9:30pm", phone: "(216) 555-0142" },
 ];
 
 const state = {
@@ -135,7 +135,7 @@ function footer() {
         </div>
         <div>
           <h4>Find Us</h4>
-          <p>3915 Carnegie Ave<br>Cleveland, OH 44115<br>12:00 PM – 9:30 PM daily<br><a href="#/locations">Directions →</a></p>
+          <p>3915 Carnegie Ave<br>Cleveland, OH 44115<br>Mon–Thu 11am–11pm<br>Fri–Sat 11am–2am<br>Sun 12:30pm–9:30pm<br><a href="#/locations">Directions →</a></p>
         </div>
         <div>
           <h4>Connect</h4>
@@ -175,7 +175,7 @@ function viewHome() {
       <div class="section-head">
         <div>
           <h2 class="h-display">Visit Us</h2>
-          <p>3915 Carnegie Ave, Cleveland — 12:00 PM to 9:30 PM daily.</p>
+          <p>3915 Carnegie Ave, Cleveland<br>Mon–Thu 11am–11pm · Fri–Sat 11am–2am · Sun 12:30pm–9:30pm</p>
         </div>
         <a href="#/locations" class="btn btn-dark">Get Directions</a>
       </div>
@@ -269,7 +269,6 @@ function viewCatering() {
           <div class="confirm-detail-card" style="margin:0 0 20px;">
             <div class="row"><span>Sandwiches</span><span id="cCountPreview">0 / ${menu.minimum || 10} minimum</span></div>
             <div class="row"><span>Estimated total</span><span id="cTotalPreview">$0.00</span></div>
-            <div class="row" style="font-size:0.78rem; color:var(--steel);"><span>Estimate before tax. We'll confirm final pricing with you.</span></div>
           </div>
 
           <h2 class="h-display" style="font-size:1.3rem; margin:0 0 12px;">2. Event Details</h2>
@@ -778,7 +777,7 @@ function renderLocationCard(loc) {
     <div>
       <h3 style="margin:0 0 4px;">${loc.name}</h3>
       <p style="margin:0 0 4px;">${loc.address}</p>
-      <p style="margin:0; color:var(--steel); font-size:0.85rem;">${loc.hours}${loc.phone ? ` · ${loc.phone}` : ''}</p>
+      <p style="margin:0; color:var(--steel); font-size:0.85rem;">${escapeHtml(loc.hours).replace(/\n/g, '<br>')}${loc.phone ? `<br>${loc.phone}` : ''}</p>
     </div>
     <a class="btn btn-dark btn-sm" style="align-self:center;" target="_blank" rel="noopener"
        href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.address)}">Directions</a>

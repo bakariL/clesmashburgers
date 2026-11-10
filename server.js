@@ -96,7 +96,7 @@ const LOCATIONS = [
     id: "cleveland",
     name: "Cleveland",
     address: "3915 Carnegie Ave, Cleveland, OH 44115",
-    hours: "12:00 PM – 9:30 PM daily",
+    hours: "Mon–Thu 11am–11pm\nFri–Sat 11am–2am\nSun 12:30pm–9:30pm",
     phone: "(216) 555-0142",
   },
 ];
