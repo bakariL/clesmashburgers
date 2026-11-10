@@ -1,0 +1,158 @@
+// Data layer for orders + catering requests.
+//
+// This is a flat-file store, not a real database — but unlike the very
+// first version of this prototype, writes are now atomic (write-to-temp
+// + rename, so a crash mid-write can't leave a half-written file) and
+// serialized through a per-file queue (so two requests that both await
+// something mid-transaction — e.g. a Stripe call — can't interleave their
+// reads/writes and stomp on each other).
+//
+// If you outgrow this (multiple server processes, heavier write volume),
+// swap the JSONStore internals for real SQL — every call site here already
+// talks in terms of getOrder/updateOrder/etc., so the rest of the app
+// doesn't need to change.
+
+const fs = require("fs");
+const path = require("path");
+
+class JSONStore {
+  constructor(file) {
+    this.file = file;
+    this.queue = Promise.resolve();
+    if (!fs.existsSync(file)) fs.writeFileSync(file, "[]");
+  }
+
+  _read() {
+    try {
+      return JSON.parse(fs.readFileSync(this.file, "utf8"));
+    } catch {
+      return [];
+    }
+  }
+
+  _writeAtomic(data) {
+    const tmp = `${this.file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    fs.renameSync(tmp, this.file);
+  }
+
+  // Runs fn(currentArray) synchronously and persists whatever fn mutated it
+  // to. Queued so overlapping requests can't race each other.
+  mutate(fn) {
+    this.queue = this.queue.then(() => {
+      const data = this._read();
+      const result = fn(data);
+      this._writeAtomic(data);
+      return result;
+    });
+    return this.queue;
+  }
+
+  read() {
+    return this.queue.then(() => this._read());
+  }
+}
+
+const DATA_DIR = path.join(__dirname, "data");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+
+const ordersStore = new JSONStore(path.join(DATA_DIR, "orders.json"));
+const cateringStore = new JSONStore(path.join(DATA_DIR, "catering.json"));
+const blockedDatesStore = new JSONStore(path.join(DATA_DIR, "blocked-dates.json"));
+
+// ---- Orders ----
+
+function createOrder(order) {
+  return ordersStore.mutate((data) => {
+    data.unshift(order);
+    return order;
+  });
+}
+
+function updateOrder(ref, patch) {
+  return ordersStore.mutate((data) => {
+    const order = data.find((o) => o.ref === ref);
+    if (!order) return null;
+    Object.assign(order, patch, { updatedAt: new Date().toISOString() });
+    return order;
+  });
+}
+
+function getOrder(ref) {
+  return ordersStore.read().then((data) => data.find((o) => o.ref === ref) || null);
+}
+
+function getOrders() {
+  return ordersStore.read();
+}
+
+// ---- Catering ----
+
+function createCateringRequest(request) {
+  return cateringStore.mutate((data) => {
+    data.unshift(request);
+    return request;
+  });
+}
+
+function updateCateringRequest(ref, patch) {
+  return cateringStore.mutate((data) => {
+    const request = data.find((r) => r.ref === ref);
+    if (!request) return null;
+    Object.assign(request, patch, { updatedAt: new Date().toISOString() });
+    return request;
+  });
+}
+
+function getCateringRequest(ref) {
+  return cateringStore.read().then((data) => data.find((r) => r.ref === ref) || null);
+}
+
+function getCateringRequests() {
+  return cateringStore.read();
+}
+
+// ---- Manually-blocked catering dates ----
+// Separate from actual paid bookings — this is for staff blocking a date
+// with no booking attached (closed, already promised verbally, prepping
+// for something else, etc.). One entry per blocked date.
+
+function blockDate(date, reason) {
+  return blockedDatesStore.mutate((data) => {
+    const existing = data.find((b) => b.date === date);
+    if (existing) {
+      existing.reason = reason || existing.reason;
+      return existing;
+    }
+    const entry = { date, reason: reason || "", createdAt: new Date().toISOString() };
+    data.push(entry);
+    return entry;
+  });
+}
+
+function unblockDate(date) {
+  return blockedDatesStore.mutate((data) => {
+    const idx = data.findIndex((b) => b.date === date);
+    if (idx === -1) return false;
+    data.splice(idx, 1);
+    return true;
+  });
+}
+
+function getBlockedDates() {
+  return blockedDatesStore.read();
+}
+
+module.exports = {
+  createOrder,
+  updateOrder,
+  getOrder,
+  getOrders,
+  createCateringRequest,
+  updateCateringRequest,
+  getCateringRequest,
+  getCateringRequests,
+  blockDate,
+  unblockDate,
+  getBlockedDates,
+};

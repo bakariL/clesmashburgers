@@ -1,0 +1,10 @@
+# Real secrets — never commit this. Copy .env.example instead.
+.env
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+*.swp
+
+# In case dependencies are ever added later
+node_modules/

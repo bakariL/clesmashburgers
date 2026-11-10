@@ -14,6 +14,7 @@ loadEnv();
 const db = require("./db");
 const payments = require("./payments");
 const notify = require("./notify");
+const notifications = require("./notifications");
 const clover = require("./clover");
 
 const PORT = process.env.PORT || 3000;
@@ -73,47 +74,44 @@ function makeRefCode(prefix) {
   return `${prefix}-${code}`;
 }
 
-const MENU = [
-  { id: "single-smash", name: "Single Smash", price: 7.5, desc: "One smashed patty, American cheese, grilled onion, pickles, CSB sauce on a griddled bun." },
-  { id: "double-smash", name: "Double Smash", price: 10.5, desc: "Two smashed patties, double American cheese, grilled onion, pickles, CSB sauce." },
-  { id: "triple-smash", name: "Triple Smash", price: 13.5, desc: "Three patties for the truly committed. Same fixings, more char." },
-  { id: "the-flats", name: "The Flats", price: 12, desc: "Double smash, bacon, cheddar, crispy onion straws, smoky BBQ sauce." },
-  { id: "ohio-city", name: "Ohio City Veggie", price: 10, desc: "House-smashed black bean & mushroom patty, American cheese, pickles, CSB sauce." },
-  { id: "smash-fries", name: "Smash Fries", price: 4.5, desc: "Griddle-crisped fries, house seasoning." },
-  { id: "cheese-fries", name: "Loaded Cheese Fries", price: 6.5, desc: "Fries, warm cheese sauce, grilled onion, pickled jalapeño." },
-  { id: "shake", name: "Hand-Spun Shake", price: 6, desc: "Vanilla, chocolate, or malt. Ask about the seasonal flavor." },
-];
+// Catering menu — customers pick a quantity of each sandwich, and can
+// upgrade any of them to a combo (+$5, adds fries and a drink) or add a
+// dessert (+$5). Sandwiches take a special-request note.
+const CATERING_MENU = {
+  sandwiches: [
+    { id: "cleveland-classic", name: "The Cleveland Classic", price: 10 },
+    { id: "jive-turkey", name: "The Jive Turkey", price: 10 },
+    { id: "q-dawg", name: "The Q Dawg", price: 8 },
+  ],
+  comboUpgrade: { price: 5, description: "Adds fries and a drink" },
+  dessertAddOn: { price: 5, description: "Add a dessert" },
+};
 
-const ORDER_STATUSES = ["pending_payment", "received", "in_progress", "ready", "completed", "canceled"];
 const CATERING_STATUSES = ["pending_payment", "booked", "in_progress", "completed", "canceled"];
 
-// Fixed catering packages — flat per-person pricing, no menu customization.
-// The only inputs a customer gives are headcount, event date/type, and
-// contact info; the food itself is fixed per package.
-const CATERING_PACKAGES = [
+
+// Our 3 storefronts — fixed locations, not a rotating pop-up schedule.
+const LOCATIONS = [
   {
-    id: "office-lunch",
-    name: "Office Lunch",
-    pricePerPerson: 14,
-    minHeadcount: 10,
-    description: "Smash sliders, fries, and a house salad — dropped off ready to serve.",
-    includes: ["Single-smash sliders", "Smash fries", "House salad", "Plates, napkins, utensils"],
+    id: "parma",
+    name: "Parma",
+    address: "6164 Broadview Rd, Parma, OH 44134",
+    hours: "12:00 PM – 9:30 PM daily",
+    phone: "(216) 555-0142",
   },
   {
-    id: "backyard-griddle",
-    name: "Backyard Griddle",
-    pricePerPerson: 19,
-    minHeadcount: 20,
-    description: "A build-your-own smash bar, cooked fresh on-site off the truck.",
-    includes: ["Made-to-order smash burgers on-site", "Two sides", "Hand-spun shakes", "1.5 hours of service"],
+    id: "cleveland",
+    name: "Cleveland",
+    address: "3915 Carnegie Ave, Cleveland, OH 44115",
+    hours: "12:00 PM – 9:30 PM daily",
+    phone: "(216) 555-0142",
   },
   {
-    id: "premium-event",
-    name: "Premium Event",
-    pricePerPerson: 26,
-    minHeadcount: 30,
-    description: "Full-service catering for weddings, corporate events, and larger parties.",
-    includes: ["Full on-site griddle service", "Two sides + shakes", "Staff for up to 3 hours", "Custom signage with your event name"],
+    id: "garfield-heights",
+    name: "Garfield Heights",
+    address: "4545 E. 131st St, Garfield Heights, OH 44105",
+    hours: "12:00 PM – 9:30 PM daily",
+    phone: "(216) 555-0142",
   },
 ];
 
@@ -123,72 +121,47 @@ function kitchenAuthorized(req) {
   return req.headers["x-kitchen-passcode"] === configured;
 }
 
-async function sendOrderConfirmations(order) {
-  const itemsSummary = order.items
-    .map((i) => {
-      const m = MENU.find((x) => x.id === i.id);
-      return `${i.qty}x ${m ? m.name : i.id}`;
-    })
-    .join(", ");
+const STRIPE_KEY_MISSING = { error: "Online payment isn't available right now. Please call the shop to order." };
 
-  await notify.sendSMS(
-    order.customer.phone,
-    `Cleveland Smash Burgers: order ${order.ref} received! ${itemsSummary}. Total $${order.total.toFixed(2)}. We'll text when it's ready.`
-  );
+// Validates the customer's catering selection against CATERING_MENU and
+// prices it on the server (never trust prices from the browser). Returns
+// { error } or { items, subtotal, sandwichCount, stripeLines }.
+function buildCateringOrder(rawItems) {
+  if (!Array.isArray(rawItems)) return { error: "Choose at least one sandwich." };
+  const whole = (n) => (Number.isInteger(Number(n)) && Number(n) >= 0 ? Number(n) : NaN);
+  const items = [];
+  const stripeLines = [];
+  let subtotal = 0;
+  let sandwichCount = 0;
 
-  if (order.customer.email) {
-    await notify.sendEmail(
-      order.customer.email,
-      `Order ${order.ref} confirmed — Cleveland Smash Burgers`,
-      `<h2>Thanks, ${order.customer.name}!</h2><p>Your order <strong>${order.ref}</strong> is in.</p><p>${itemsSummary}</p><p>Total: $${order.total.toFixed(2)}</p><p>We'll text ${order.customer.phone} when it's ready.</p>`
-    );
+  for (const raw of rawItems) {
+    const m = CATERING_MENU.sandwiches.find((x) => x.id === raw.id);
+    if (!m) return { error: "One of the items you picked isn't on our menu." };
+    const qty = whole(raw.qty);
+    const comboQty = whole(raw.comboQty || 0);
+    const dessertQty = whole(raw.dessertQty || 0);
+    if ([qty, comboQty, dessertQty].some(Number.isNaN)) return { error: "Quantities must be whole numbers." };
+    if (qty === 0) continue;
+    if (qty > 500) return { error: "For orders that large, please call us." };
+    if (comboQty > qty) return { error: `You can't have more combos than ${m.name} sandwiches.` };
+    if (dessertQty > qty) return { error: `You can't have more desserts than ${m.name} sandwiches.` };
+
+    items.push({ id: m.id, name: m.name, price: m.price, qty, comboQty, dessertQty, notes: String(raw.notes || "").trim().slice(0, 300) });
+    sandwichCount += qty;
+    subtotal += m.price * qty;
+    stripeLines.push({ name: m.name, unitAmountCents: Math.round(m.price * 100), quantity: qty });
+    if (comboQty) {
+      subtotal += CATERING_MENU.comboUpgrade.price * comboQty;
+      stripeLines.push({ name: `Combo upgrade (fries + drink) — ${m.name}`, unitAmountCents: Math.round(CATERING_MENU.comboUpgrade.price * 100), quantity: comboQty });
+    }
+    if (dessertQty) {
+      subtotal += CATERING_MENU.dessertAddOn.price * dessertQty;
+      stripeLines.push({ name: `Dessert add-on — ${m.name}`, unitAmountCents: Math.round(CATERING_MENU.dessertAddOn.price * 100), quantity: dessertQty });
+    }
   }
-}
 
-async function sendCateringConfirmation(request) {
-  const msg = `Your ${request.package.name} catering is booked for ${request.headcount} guests on ${request.eventDate} at ${request.eventAddress}. Total: $${request.total.toFixed(2)}.`;
-
-  await notify.sendEmail(
-    request.contact.email,
-    `Booking confirmed — Cleveland Smash Burgers Catering`,
-    `<h2>You're booked, ${request.contact.name}!</h2><p>${msg}</p><p>Reference: <strong>${request.ref}</strong></p><p>Questions? Reply to this email or call (216) 555-0142.</p>`
-  );
-  if (request.contact.phone) {
-    await notify.sendSMS(request.contact.phone, `Cleveland Smash Burgers: booking ${request.ref} confirmed. ${msg}`);
-  }
-}
-
-// Pushes a paid order into Clover so kitchen staff see it on the
-// register/KDS. Never throws — a Clover hiccup should never block a
-// customer's confirmation. Returns true/false so the caller can record
-// sync status on the order for the kitchen board to show.
-async function pushOrderToClover(order) {
-  if (!clover.isCloverConfigured()) return false;
-  try {
-    const cartLineItems = order.items
-      .map((i) => {
-        const m = MENU.find((x) => x.id === i.id);
-        return m ? { name: m.name, qty: i.qty, priceCents: Math.round(m.price * 100) } : null;
-      })
-      .filter(Boolean);
-    const lineItems = clover.expandLineItems(cartLineItems);
-    // Tax as its own line so Clover's total matches what was actually charged.
-    if (order.tax > 0) lineItems.push({ name: "Tax", priceCents: Math.round(order.tax * 100) });
-
-    const note = [
-      `Order ${order.ref}`,
-      order.customer.name,
-      order.customer.phone,
-      order.fulfillment === "pickup" ? "Pickup ASAP" : "Scheduled pickup",
-      order.notes || "",
-    ].filter(Boolean).join(" · ");
-
-    await clover.pushOrder({ lineItems, note });
-    return true;
-  } catch (e) {
-    console.error(`Clover push failed for order ${order.ref}:`, e.message);
-    return false;
-  }
+  if (items.length === 0) return { error: "Choose at least one sandwich." };
+  return { items, subtotal: Math.round(subtotal * 100) / 100, sandwichCount, stripeLines };
 }
 
 // Same idea for a catering booking — one summary line item for the whole
@@ -197,10 +170,10 @@ async function pushOrderToClover(order) {
 async function pushCateringToClover(booking) {
   if (!clover.isCloverConfigured()) return false;
   try {
-    const lineItems = [{
-      name: `${booking.package.name} catering — ${booking.headcount} guests`,
-      priceCents: Math.round(booking.subtotal * 100),
-    }];
+    const lineItems = booking.items.map((i) => ({
+      name: `${i.name}${i.comboQty ? ` (${i.comboQty} combo)` : ""}${i.dessertQty ? ` (${i.dessertQty} dessert)` : ""}${i.notes ? ` — NOTE: ${i.notes}` : ""}`,
+      priceCents: Math.round((i.price * i.qty + 5 * i.comboQty + 5 * i.dessertQty) * 100),
+    }));
     if (booking.tax > 0) lineItems.push({ name: "Tax", priceCents: Math.round(booking.tax * 100) });
 
     const note = [
@@ -219,18 +192,34 @@ async function pushCateringToClover(booking) {
   }
 }
 
-async function sendLocationAlert(subscriber, location) {
-  const when = `${location.date}${location.startTime ? ` ${location.startTime}` : ""}${location.endTime ? `–${location.endTime}` : ""}`;
-  const text = `Cleveland Smash Burgers pop-up alert: we'll be at ${location.name}, ${location.address} on ${when}.${location.notes ? ` ${location.notes}` : ""}`;
+// We only do one catering event per day. A date is unavailable if either
+// a non-canceled booking already has it, or staff manually blocked it
+// (closed, already promised verbally, prepping for something else, etc.).
+async function isDateAvailable(date, { ignoreRef } = {}) {
+  const [bookings, blocked] = await Promise.all([db.getCateringRequests(), db.getBlockedDates()]);
+  const bookingConflict = bookings.some(
+    (b) => b.eventDate === date && b.status !== "canceled" && b.ref !== ignoreRef
+  );
+  const manuallyBlocked = blocked.some((b) => b.date === date);
+  return !bookingConflict && !manuallyBlocked;
+}
 
-  if (subscriber.phone) await notify.sendSMS(subscriber.phone, text);
-  if (subscriber.email) {
-    await notify.sendEmail(
-      subscriber.email,
-      "New pop-up near you — Cleveland Smash Burgers",
-      `<p>${text}</p>`
-    );
-  }
+// Public version: just which dates are taken, no customer details — this
+// is called by anyone visiting the booking page, unauthenticated.
+async function getPublicCateringCalendar() {
+  const [bookings, blocked] = await Promise.all([db.getCateringRequests(), db.getBlockedDates()]);
+  const bookedDates = bookings.filter((b) => b.status !== "canceled").map((b) => b.eventDate);
+  const blockedDates = blocked.map((b) => b.date);
+  return { bookedDates, blockedDates };
+}
+
+// Kitchen-board version: full detail (who/ref/reason), kitchen-auth only.
+async function getStaffCateringCalendar() {
+  const [bookings, blocked] = await Promise.all([db.getCateringRequests(), db.getBlockedDates()]);
+  const booked = bookings
+    .filter((b) => b.status !== "canceled")
+    .map((b) => ({ date: b.eventDate, ref: b.ref, name: b.contact.name, status: b.status }));
+  return { booked, blocked };
 }
 
 function get(req) {
@@ -245,11 +234,6 @@ function requestOrigin(req) {
 const server = http.createServer(async (req, res) => {
   const url = get(req);
   const parts = url.pathname.split("/").filter(Boolean); // e.g. ['api','orders','CSB-4Q7K']
-
-  // ---- Menu ----
-  if (url.pathname === "/api/menu" && req.method === "GET") {
-    return sendJSON(res, 200, { items: MENU });
-  }
 
   // ---- Clover: status (kitchen — lets the board know whether to show sync info) ----
   if (url.pathname === "/api/clover/status" && req.method === "GET") {
@@ -274,209 +258,77 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 401, { ok: false, open: false, error: "Incorrect passcode." });
   }
 
-  // ---- Orders: create ----
-  if (url.pathname === "/api/orders" && req.method === "POST") {
-    try {
-      const body = await readBody(req);
-      const { items, customer, fulfillment, notes } = body;
-
-      if (!Array.isArray(items) || items.length === 0) {
-        return sendJSON(res, 400, { error: "Your order has no items yet." });
-      }
-      if (!customer || !customer.name || !customer.phone) {
-        return sendJSON(res, 400, { error: "Name and phone are required." });
-      }
-
-      const subtotal = items.reduce((sum, i) => {
-        const menuItem = MENU.find((m) => m.id === i.id);
-        return sum + (menuItem ? menuItem.price * i.qty : 0);
-      }, 0);
-      const tax = Math.round(subtotal * 0.08 * 100) / 100;
-      const total = Math.round((subtotal + tax) * 100) / 100;
-      const stripeOn = payments.isStripeConfigured();
-
-      const order = {
-        ref: makeRefCode("CSB"),
-        items,
-        customer,
-        fulfillment: fulfillment || "pickup",
-        notes: notes || "",
-        subtotal: Math.round(subtotal * 100) / 100,
-        tax,
-        total,
-        status: stripeOn ? "pending_payment" : "received",
-        paid: !stripeOn,
-        createdAt: new Date().toISOString(),
-      };
-
-      await db.createOrder(order);
-
-      if (!stripeOn) {
-        await sendOrderConfirmations(order);
-        const synced = await pushOrderToClover(order);
-        const finalOrder = await db.updateOrder(order.ref, { cloverSynced: synced });
-        return sendJSON(res, 201, { order: finalOrder || order });
-      }
-
-      try {
-        const lineItems = items
-          .map((i) => {
-            const menuItem = MENU.find((m) => m.id === i.id);
-            if (!menuItem) return null;
-            return {
-              name: menuItem.name,
-              unitAmountCents: Math.round(menuItem.price * 100),
-              quantity: i.qty,
-              taxCode: payments.FOOD_TAX_CODE,
-            };
-          })
-          .filter(Boolean);
-        // No manual "Tax" line here — automatic_tax on the Checkout
-        // Session (see payments.js) calculates and adds real tax itself.
-        // The order.tax/order.total set above are just a pre-checkout
-        // estimate; verify-payment overwrites them with Stripe's actual
-        // figures once the customer pays.
-
-        const origin = requestOrigin(req);
-        const session = await payments.createCheckoutSession({
-          lineItems,
-          returnUrl: `${origin}/#/order-confirmed?ref=${order.ref}&session_id={CHECKOUT_SESSION_ID}`,
-          customerEmail: order.customer.email || undefined,
-          metadata: { order_ref: order.ref },
-        });
-        await db.updateOrder(order.ref, { stripeSessionId: session.id });
-        return sendJSON(res, 201, { order, clientSecret: session.client_secret });
-      } catch (e) {
-        // Stripe misconfigured/unreachable — don't block the customer, fall back to test mode.
-        console.error("Stripe checkout session failed, falling back to test mode:", e.message);
-        const finalOrder = await db.updateOrder(order.ref, {
-          status: "received",
-          paid: true,
-          paymentNote: "Stripe unavailable — order accepted without online payment.",
-        });
-        await sendOrderConfirmations(finalOrder);
-        const synced = await pushOrderToClover(finalOrder);
-        const withSync = await db.updateOrder(order.ref, { cloverSynced: synced });
-        return sendJSON(res, 201, { order: withSync || finalOrder });
-      }
-    } catch (e) {
-      return sendJSON(res, 400, { error: "Couldn't read that order. " + e.message });
-    }
+  // ---- Catering: menu (public) ----
+  if (url.pathname === "/api/catering/menu" && req.method === "GET") {
+    return sendJSON(res, 200, CATERING_MENU);
   }
 
-  // ---- Orders: verify payment after Stripe redirect ----
-  if (parts[0] === "api" && parts[1] === "orders" && parts[3] === "verify-payment" && req.method === "GET") {
-    const ref = decodeURIComponent(parts[2]);
-    const sessionId = url.searchParams.get("session_id");
-    const order = await db.getOrder(ref);
-    if (!order) return sendJSON(res, 404, { error: "Order not found." });
-    if (order.paid) return sendJSON(res, 200, { order }); // already confirmed — avoid re-sending texts on refresh
-    if (!sessionId) return sendJSON(res, 400, { error: "Missing session id." });
-
-    try {
-      const session = await payments.retrieveCheckoutSession(sessionId);
-      if (session.payment_status === "paid") {
-        // Overwrite our pre-checkout estimate with what Stripe actually
-        // calculated and charged (real tax, once you have a jurisdiction
-        // registered — see payments.js).
-        const updated = await db.updateOrder(ref, {
-          status: "received",
-          paid: true,
-          stripePaymentStatus: session.payment_status,
-          subtotal: Math.round((session.amount_subtotal || 0)) / 100,
-          tax: Math.round((session.total_details?.amount_tax || 0)) / 100,
-          total: Math.round((session.amount_total || 0)) / 100,
-        });
-        await sendOrderConfirmations(updated);
-        const synced = await pushOrderToClover(updated);
-        const withSync = await db.updateOrder(ref, { cloverSynced: synced });
-        return sendJSON(res, 200, { order: withSync || updated });
-      }
-      return sendJSON(res, 200, { order, paymentPending: true });
-    } catch (e) {
-      return sendJSON(res, 502, { error: "Could not verify payment: " + e.message });
-    }
+  // ---- Catering: calendar — which dates are taken (public, read-only, no customer details) ----
+  if (url.pathname === "/api/catering/calendar" && req.method === "GET") {
+    return sendJSON(res, 200, await getPublicCateringCalendar());
   }
 
-  // ---- Orders: single / update status ----
-  if (parts[0] === "api" && parts[1] === "orders" && parts.length === 3) {
-    const ref = decodeURIComponent(parts[2]);
-
-    if (req.method === "GET") {
-      const order = await db.getOrder(ref);
-      if (!order) return sendJSON(res, 404, { error: "Order not found." });
-      return sendJSON(res, 200, { order });
-    }
-
-    if (req.method === "PATCH") {
-      if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
-      const body = await readBody(req).catch(() => ({}));
-      if (!ORDER_STATUSES.includes(body.status)) {
-        return sendJSON(res, 400, { error: `Status must be one of: ${ORDER_STATUSES.join(", ")}` });
-      }
-      const updated = await db.updateOrder(ref, { status: body.status });
-      if (!updated) return sendJSON(res, 404, { error: "Order not found." });
-      return sendJSON(res, 200, { order: updated });
-    }
-  }
-
-  // ---- Orders: retry Clover sync (kitchen) ----
-  if (parts[0] === "api" && parts[1] === "orders" && parts.length === 4 && parts[3] === "resync-clover" && req.method === "POST") {
+  // ---- Catering: calendar — full detail for staff (kitchen-auth) ----
+  if (url.pathname === "/api/catering/calendar/staff" && req.method === "GET") {
     if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
-    const ref = decodeURIComponent(parts[2]);
-    const order = await db.getOrder(ref);
-    if (!order) return sendJSON(res, 404, { error: "Order not found." });
-    const synced = await pushOrderToClover(order);
-    const updated = await db.updateOrder(ref, { cloverSynced: synced });
-    return sendJSON(res, synced ? 200 : 502, { order: updated, synced });
+    return sendJSON(res, 200, await getStaffCateringCalendar());
   }
 
-  // ---- Orders: list (kitchen) ----
-  if (url.pathname === "/api/orders" && req.method === "GET") {
+  // ---- Catering: manually block a date (kitchen-auth) ----
+  if (url.pathname === "/api/catering/calendar/block" && req.method === "POST") {
     if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
-    return sendJSON(res, 200, { orders: await db.getOrders() });
+    const body = await readBody(req).catch(() => ({}));
+    if (!body.date) return sendJSON(res, 400, { error: "A date is required." });
+    const entry = await db.blockDate(body.date, body.reason || "");
+    return sendJSON(res, 200, { blocked: entry });
   }
 
-  // ---- Catering: list fixed packages (public) ----
-  if (url.pathname === "/api/catering/packages" && req.method === "GET") {
-    return sendJSON(res, 200, { packages: CATERING_PACKAGES });
+  // ---- Catering: unblock a manually-blocked date (kitchen-auth) ----
+  if (url.pathname === "/api/catering/calendar/unblock" && req.method === "POST") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+    const body = await readBody(req).catch(() => ({}));
+    if (!body.date) return sendJSON(res, 400, { error: "A date is required." });
+    const removed = await db.unblockDate(body.date);
+    return sendJSON(res, 200, { removed });
   }
 
   // ---- Catering: book + pay ----
   if (url.pathname === "/api/catering" && req.method === "POST") {
     try {
       const body = await readBody(req);
-      const { packageId, headcount, eventDate, eventType, eventAddress, budgetNote, notes, contact } = body;
+      const { eventDate, eventType, eventAddress, budgetNote, notes, contact } = body;
 
-      const pkg = CATERING_PACKAGES.find((p) => p.id === packageId);
-      if (!pkg) return sendJSON(res, 400, { error: "Choose a valid catering package." });
+      const built = buildCateringOrder(body.items);
+      if (built.error) return sendJSON(res, 400, { error: built.error });
 
-      const count = Number(headcount);
-      if (!Number.isFinite(count) || count < pkg.minHeadcount) {
-        return sendJSON(res, 400, { error: `${pkg.name} requires at least ${pkg.minHeadcount} guests.` });
-      }
       if (!eventDate) return sendJSON(res, 400, { error: "Event date is required." });
+      if (!(await isDateAvailable(eventDate))) {
+        return sendJSON(res, 409, { error: "That date is already booked — please choose another." });
+      }
+      if (payments.isStripeConfigured() && !payments.getPublishableKey()) {
+        console.error("Booking blocked: STRIPE_SECRET_KEY is set but STRIPE_PUBLISHABLE_KEY is missing.");
+        return sendJSON(res, 503, STRIPE_KEY_MISSING);
+      }
       if (!eventAddress) return sendJSON(res, 400, { error: "Event address is required." });
       if (!contact || !contact.name || !contact.email || !contact.phone) {
         return sendJSON(res, 400, { error: "Name, email, and phone are required." });
       }
 
-      const subtotal = Math.round(pkg.pricePerPerson * count * 100) / 100;
-      const total = subtotal; // pre-checkout estimate; verify-payment overwrites with Stripe's real total+tax
       const stripeOn = payments.isStripeConfigured();
+      const subtotal = built.subtotal; // pre-checkout estimate; verify-payment overwrites with Stripe's real total+tax
 
       const booking = {
         ref: makeRefCode("CATER"),
-        package: { id: pkg.id, name: pkg.name, pricePerPerson: pkg.pricePerPerson },
-        headcount: count,
+        items: built.items,
+        guestCount: built.sandwichCount,
         subtotal,
         tax: 0,
-        total,
+        total: subtotal,
         eventDate,
         eventType: eventType || "not specified",
         eventAddress,
-        budgetNote: budgetNote || "",
-        notes: notes || "",
+        budgetNote: String(budgetNote || "").slice(0, 300),
+        notes: String(notes || "").slice(0, 1000),
         contact,
         status: stripeOn ? "pending_payment" : "booked",
         paid: !stripeOn,
@@ -485,8 +337,12 @@ const server = http.createServer(async (req, res) => {
 
       await db.createCateringRequest(booking);
 
+      // Email the address they typed right away ("Book & Pay" was hit) —
+      // not awaited so it never slows the checkout; never throws.
+      if (stripeOn) notifications.sendCateringStarted(booking);
+
       if (!stripeOn) {
-        await sendCateringConfirmation(booking);
+        await notifications.sendCateringConfirmation(booking);
         const synced = await pushCateringToClover(booking);
         const finalBooking = await db.updateCateringRequest(booking.ref, { cloverSynced: synced });
         return sendJSON(res, 201, { request: finalBooking || booking });
@@ -495,12 +351,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const origin = requestOrigin(req);
         const session = await payments.createCheckoutSession({
-          lineItems: [{
-            name: `${pkg.name} catering — ${count} guests`,
-            unitAmountCents: Math.round(pkg.pricePerPerson * 100),
-            quantity: count,
-            taxCode: payments.FOOD_TAX_CODE,
-          }],
+          lineItems: built.stripeLines.map((l) => ({ ...l, taxCode: payments.FOOD_TAX_CODE })),
           returnUrl: `${origin}/#/catering-confirmed?ref=${booking.ref}&session_id={CHECKOUT_SESSION_ID}`,
           customerEmail: contact.email,
           metadata: { catering_ref: booking.ref },
@@ -508,16 +359,9 @@ const server = http.createServer(async (req, res) => {
         await db.updateCateringRequest(booking.ref, { stripeSessionId: session.id });
         return sendJSON(res, 201, { request: booking, clientSecret: session.client_secret });
       } catch (e) {
-        console.error("Stripe checkout session failed, falling back to test mode:", e.message);
-        const finalBooking = await db.updateCateringRequest(booking.ref, {
-          status: "booked",
-          paid: true,
-          paymentNote: "Stripe unavailable — booking accepted without online payment.",
-        });
-        await sendCateringConfirmation(finalBooking);
-        const synced = await pushCateringToClover(finalBooking);
-        const withSync = await db.updateCateringRequest(booking.ref, { cloverSynced: synced });
-        return sendJSON(res, 201, { request: withSync || finalBooking });
+        console.error("Stripe checkout session failed:", e.message);
+        await db.updateCateringRequest(booking.ref, { status: "canceled", paid: false, paymentNote: "Stripe error: " + e.message });
+        return sendJSON(res, 502, { error: "We couldn't start payment right now. Please try again in a minute or call the shop. You were not charged." });
       }
     } catch (e) {
       return sendJSON(res, 400, { error: "Couldn't read that booking. " + e.message });
@@ -544,7 +388,7 @@ const server = http.createServer(async (req, res) => {
           tax: Math.round((session.total_details?.amount_tax || 0)) / 100,
           total: Math.round((session.amount_total || 0)) / 100,
         });
-        await sendCateringConfirmation(updated);
+        await notifications.sendCateringConfirmation(updated);
         const synced = await pushCateringToClover(updated);
         const withSync = await db.updateCateringRequest(ref, { cloverSynced: synced });
         return sendJSON(res, 200, { request: withSync || updated });
@@ -593,119 +437,9 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 200, { requests: await db.getCateringRequests() });
   }
 
-  // ---- Locations / pop-up schedule: list (public) ----
+  // ---- Locations: our 3 storefronts (public) ----
   if (url.pathname === "/api/locations" && req.method === "GET") {
-    return sendJSON(res, 200, { locations: await db.getLocations() });
-  }
-
-  // ---- Locations: create (kitchen) ----
-  if (url.pathname === "/api/locations" && req.method === "POST") {
-    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
-    const body = await readBody(req).catch(() => ({}));
-    const { date, startTime, endTime, name, address, zip, notes, type } = body;
-    if (!date || !name || !address) {
-      return sendJSON(res, 400, { error: "Date, stop name, and address are required." });
-    }
-    const location = {
-      id: crypto.randomUUID(),
-      date,
-      startTime: startTime || "",
-      endTime: endTime || "",
-      name,
-      address,
-      zip: (zip || "").trim(),
-      notes: notes || "",
-      type: type === "event" ? "event" : "weekly",
-      notifiedAt: null,
-      createdAt: new Date().toISOString(),
-    };
-    await db.createLocation(location);
-    return sendJSON(res, 201, { location });
-  }
-
-  // ---- Locations: update / delete (kitchen) ----
-  if (parts[0] === "api" && parts[1] === "locations" && parts.length === 3 && parts[2] !== "notify") {
-    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
-    const id = decodeURIComponent(parts[2]);
-
-    if (req.method === "PATCH") {
-      const body = await readBody(req).catch(() => ({}));
-      const updated = await db.updateLocation(id, body);
-      if (!updated) return sendJSON(res, 404, { error: "Stop not found." });
-      return sendJSON(res, 200, { location: updated });
-    }
-
-    if (req.method === "DELETE") {
-      const removed = await db.deleteLocation(id);
-      if (!removed) return sendJSON(res, 404, { error: "Stop not found." });
-      return sendJSON(res, 200, { ok: true });
-    }
-  }
-
-  // ---- Locations: notify subscribers about a stop (kitchen) ----
-  if (parts[0] === "api" && parts[1] === "locations" && parts.length === 4 && parts[3] === "notify" && req.method === "POST") {
-    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
-    const id = decodeURIComponent(parts[2]);
-    const body = await readBody(req).catch(() => ({}));
-
-    const locations = await db.getLocations();
-    const location = locations.find((l) => l.id === id);
-    if (!location) return sendJSON(res, 404, { error: "Stop not found." });
-
-    const allSignups = await db.getAlertSignups();
-    const nearOnly = Boolean(body.nearOnly) && Boolean(location.zip);
-    const targets = nearOnly
-      ? allSignups.filter((s) => s.zip && s.zip.slice(0, 3) === location.zip.slice(0, 3))
-      : allSignups;
-
-    let sent = 0;
-    for (const sub of targets) {
-      await sendLocationAlert(sub, location);
-      sent++;
-    }
-
-    await db.updateLocation(id, { notifiedAt: new Date().toISOString() });
-    return sendJSON(res, 200, { notified: sent, of: allSignups.length, nearOnly });
-  }
-
-  // ---- Alerts: subscribe (public) ----
-  if (url.pathname === "/api/alerts/subscribe" && req.method === "POST") {
-    const body = await readBody(req).catch(() => ({}));
-    const { name, email, phone, zip } = body;
-
-    if (!zip) return sendJSON(res, 400, { error: "A zip code is required so we know where 'near you' means." });
-    if (!email && !phone) return sendJSON(res, 400, { error: "Add an email or phone number so we can actually alert you." });
-
-    const signup = {
-      id: crypto.randomUUID(),
-      name: name || "",
-      email: email || "",
-      phone: phone || "",
-      zip: String(zip).trim(),
-      createdAt: new Date().toISOString(),
-    };
-    await db.createAlertSignup(signup);
-
-    const confirmMsg = `You're on the list for Cleveland Smash Burgers pop-up alerts near ${signup.zip}. We'll let you know when we're near you.`;
-    if (signup.phone) await notify.sendSMS(signup.phone, confirmMsg);
-    if (signup.email) await notify.sendEmail(signup.email, "You're subscribed — Cleveland Smash Burgers alerts", `<p>${confirmMsg}</p>`);
-
-    return sendJSON(res, 201, { signup });
-  }
-
-  // ---- Alerts: unsubscribe (public) ----
-  if (url.pathname === "/api/alerts/unsubscribe" && req.method === "POST") {
-    const body = await readBody(req).catch(() => ({}));
-    const { email, phone } = body;
-    if (!email && !phone) return sendJSON(res, 400, { error: "Give us the email or phone number you signed up with." });
-    const removed = await db.removeAlertSignupsByContact({ email, phone });
-    return sendJSON(res, 200, { removed });
-  }
-
-  // ---- Alerts: list subscribers (kitchen) ----
-  if (url.pathname === "/api/alerts" && req.method === "GET") {
-    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
-    return sendJSON(res, 200, { signups: await db.getAlertSignups() });
+    return sendJSON(res, 200, { locations: LOCATIONS });
   }
 
   // ---- static files ----
@@ -745,6 +479,10 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`Cleveland Smash Burgers running at http://localhost:${PORT}`);
   console.log(`Payments: ${payments.isStripeConfigured() ? "Stripe live (test/live key set)" : "test mode (no STRIPE_SECRET_KEY set)"}`);
+  if (payments.isStripeConfigured() !== Boolean(payments.getPublishableKey())) {
+    console.warn("\n!!! STRIPE MISCONFIGURED: need BOTH STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY (same Stripe account). Checkout is disabled until fixed. !!!\n");
+  }
+  console.log(`Catering notifications go to: ${notifications.cateringRecipients().join(", ")}`);
   console.log(`SMS: ${notify.smsConfigured() ? "Twilio live" : "console-logged (no Twilio env vars set)"}`);
   console.log(`Email: ${notify.emailConfigured() ? "Resend live" : "console-logged (no RESEND_API_KEY set)"}`);
   console.log(`Kitchen board: ${process.env.KITCHEN_PASSWORD ? "passcode required" : "open, no passcode set"}`);

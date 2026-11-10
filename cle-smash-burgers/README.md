@@ -6,7 +6,7 @@ plus a "download the app" experience that installs the site itself as
 an app (no App Store needed).
 
 It also has real (optional) **payments**, **SMS/email confirmations**,
-a **kitchen dashboard**, a **pop-up location schedule with alerts**, and
+a **kitchen dashboard**, a **Clover POS integration**, and
 a **safer data store** — see "The four extensions" below.
 
 ## Stack, and why
@@ -82,6 +82,29 @@ Catering pricing is fixed per package — `pricePerPerson × headcount`,
 no line-item customization — set in `CATERING_PACKAGES` near the top of
 `server.js`. That's the only place you need to touch to change prices,
 minimum headcounts, or what each package includes.
+
+**One catering event per day.** The booking page has a real calendar —
+pick an open day, booked/unavailable days are grayed out and can't be
+clicked. The server enforces this too (not just the UI): `POST
+/api/catering` rejects any date that's already taken with a `409`,
+whether that's a real paid booking or a day staff blocked manually.
+
+**Managing the calendar** happens from the kitchen board
+(`/#/kitchen`), in its own "Catering Calendar" section — same month
+view, but for staff:
+- Click an **open** day to manually block it (closed, already
+  promised verbally, prepping for something else — an optional reason
+  prompt lets you note why).
+- Click a **manually-blocked** day to open it back up.
+- Click a **booked** day to see who booked it — cancel it via the
+  status dropdown above (not here) to free that date back up, so
+  there's one source of truth for real bookings.
+
+Two endpoints back this: `GET /api/catering/calendar` is public and
+only returns *which dates are taken* — deliberately no customer names,
+since anyone visiting the booking page can call it. `GET
+/api/catering/calendar/staff` (kitchen-password-protected) returns the
+full detail — who booked what, and why a date is blocked.
 
 **Stripe Tax is wired in too.** Every Checkout Session is created with
 `automatic_tax[enabled]=true` and a verified product tax code
@@ -193,39 +216,27 @@ hiccup never blocks a sale. It's just recorded as unsynced
 order's card, so staff can push it again with one click, or just take
 the order manually from what's already on the board.
 
-## Pop-up locations & alerts
+## Locations
 
-Since you run out of a mobile stand with no fixed address, there's now
-a **`/#/locations`** page ("Find Us" in the nav) built around that:
+Three fixed storefronts, shown on a simple **`/#/locations`** page
+("Find Us" in the nav) — name, address, hours, phone, and a
+*Directions* button straight to Google Maps for each. The list is a
+plain constant (`LOCATIONS`) near the top of `server.js`, served via
+`GET /api/locations` — the same pattern as `MENU` and
+`CATERING_PACKAGES`. To add, remove, or edit a location (address,
+hours, phone), that's the one place to touch; there's no database or
+kitchen-board management UI for this since it's not something that
+changes often.
 
-- A "Next Stop" callout that surfaces whichever pop-up is coming up
-  soonest (and says "Happening Today" if it is).
-- The full upcoming schedule — date, time, address, a *Directions*
-  button straight to Google Maps, and a badge for **weekly stop** vs
-  **pop-up event**.
-- A sign-up form: name (optional), email and/or phone, and a zip code
-  so "near you" alerts mean something. Subscribing sends a real
-  confirmation text/email (or logs it in test mode, same as
-  orders/catering).
-- A working unsubscribe flow, by email or phone.
-- The homepage shows a live preview of the next few stops too.
-
-**Managing the schedule** happens from the kitchen board
-(`/#/kitchen`), since that's real day-to-day operations, not a one-time
-setup:
-
-- Add a stop (date, time, name, address, zip, notes, weekly vs. event).
-- Each stop gets a **Notify Nearby / Notify Everyone** button — press
-  it and every subscriber (optionally filtered to the same zip-code
-  area as the stop) gets a text/email automatically.
-- Remove old stops. Subscriber count is shown at the top.
-
-The "near you" filtering is a simple zip-prefix match (same first 3
-digits), not real distance — there's no geocoding API wired in. It's a
-reasonable proxy for a Cleveland-area zip cluster, and documented here
-so it's not a silent limitation: if you want actual mile-radius
-matching later, that's where a Google Maps/Mapbox geocoding call would
-slot in (see "What's still worth extending" below).
+**Checkout requires picking one.** Since all 3 locations share a
+single Clover account (per the business — confirm this is still true
+if that ever changes, since it affects how orders route), the pickup
+location is stored on the order, shown on the confirmation page,
+mentioned in the SMS/email, and — importantly — put first and in
+caps in the note sent to Clover (`PICKUP AT: PARMA`, etc.), since
+that's the only thing telling staff at a given store whether an order
+on the shared register is theirs. It's also shown on each order's
+card on the kitchen board.
 
 ## What's in here
 
@@ -239,11 +250,10 @@ env.js                    Tiny .env file loader (no dependency)
 .env.example              Every optional setting, documented
 data/orders.json          Orders land here
 data/catering.json        Catering requests land here
-data/locations.json       Pop-up schedule stops land here
-data/alerts.json          Location-alert subscribers land here
+data/blocked-dates.json   Manually-blocked catering dates land here
 public/
   index.html               App shell
-  app.js                    Frontend logic (router, cart, forms, schedule, kitchen board, PWA install)
+  app.js                    Frontend logic (router, cart, forms, kitchen board, PWA install)
   styles.css                Design system (colors, type, components)
   manifest.webmanifest      Makes the site installable
   sw.js                     Service worker (offline app-shell caching)
@@ -259,21 +269,19 @@ payment form (card / Apple Pay / Google Pay) loads right there on the
 page instead.
 
 **Catering:** Home → *Cater Your Event* → pick a package → enter
-headcount (total updates live) + date + address + contact info →
-*Book & Pay*. Same test-mode/Stripe behavior as ordering. Anyone with
-booking trouble is pointed to a phone number — there's no separate
-"request a quote" form anymore.
+headcount (total updates live) → pick an open day on the calendar →
+address + contact info → *Book & Pay*. Try picking the same day twice
+in two tabs to see the second one get rejected. Same test-mode/Stripe
+behavior as ordering. Anyone with booking trouble is pointed to a
+phone number — there's no separate "request a quote" form anymore.
 
-**Find the Stand:** `/#/locations` → sign up with a zip code → go to
-`/#/kitchen` and add a stop with that same zip → hit *Notify Nearby* →
-check the terminal (or your phone/inbox, if Twilio/Resend are
-configured) for the alert.
+**Find Us:** `/#/locations` → see the 3 storefronts, each with a
+*Directions* button straight to Google Maps.
 
 **Kitchen board:** `/#/kitchen` → enter the passcode if you set one →
 watch orders/catering requests appear as you submit them, try changing
-a status dropdown, add/remove/notify pop-up stops, and (if
-`CLOVER_MERCHANT_ID`/`CLOVER_API_TOKEN` are set) check that each order
-shows "✓ Synced to Clover."
+a status dropdown, and (if `CLOVER_MERCHANT_ID`/`CLOVER_API_TOKEN` are
+set) check that each order shows "✓ Synced to Clover."
 
 **Install the app:** *Get the App* in the nav. Real install prompt on
 Chrome/Edge/Android; "Add to Home Screen" instructions on iOS Safari.
@@ -300,10 +308,6 @@ Chrome/Edge/Android; "Add to Home Screen" instructions on iOS Safari.
 6. **True native app**, if push notifications or deeper device
    integration matter later — React Native or Capacitor could reuse the
    same API unchanged.
-7. **Real geocoding for alerts.** "Notify Nearby" currently matches on
-   the first 3 digits of a zip code — a reasonable proxy for Cleveland,
-   but a real mile-radius match needs a geocoding API (Google Maps or
-   Mapbox) to convert zips/addresses to coordinates first.
 
 ## Design notes
 
@@ -322,3 +326,21 @@ than product cards — just recolored to match: white "receipt paper"
 tickets and cards, black chrome, red for anything actionable (buttons,
 prices you can tap, the confirmation stamp). Your actual logo badge is
 now used site-wide (nav, footer, PWA icons) instead of a placeholder.
+
+## Catering booking notifications
+
+When a catering booking is paid, the full form (package, headcount, date, event type, address, budget, notes, contact details, totals) is emailed to `operations@clesmashburgers.com` and `bakarilewis@gmail.com`. Override with `CATERING_NOTIFY_EMAILS` (comma-separated). Requires `RESEND_API_KEY` and a verified sending domain in Resend.
+
+## Payment failures
+
+If Stripe can't create a checkout session, the order/booking is **not** accepted (marked canceled, customer sees an error). If only one of `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` is set, checkout is blocked and a warning is logged at startup.
+
+## Notification service
+
+All customer and team messages are sent from `notifications.js` (SMS via Twilio, email via Resend through `notify.js`). Each send retries up to 3 times and never blocks checkout; failures are logged as `[notify] ...`.
+
+## Update: ordering moved to Picnic, catering is now menu-based
+
+- Pickup ordering was removed from this app. Every "Order Now" button opens the Picnic page (`ORDER_URL` at the top of `public/app.js`).
+- Catering: customers pick quantities of The Cleveland Classic ($10), The Jive Turkey ($10) and The Q Dawg ($8), optionally upgrade each to a combo (+$5, fries + drink) or add a dessert (+$5), and leave per-sandwich notes. Menu and prices live in `CATERING_MENU` in `server.js`; prices are always computed on the server.
+- The kitchen board now shows catering bookings (items, quantities and sandwich notes) and the catering calendar only.
