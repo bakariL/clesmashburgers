@@ -30,6 +30,18 @@ function itemsText(items) {
   return (items || []).map((i) => `${i.qty}x ${i.name}`).join(", ");
 }
 
+function fmtPhone(p) {
+  const d = String(p || "").replace(/\D/g, "");
+  return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : String(p || "");
+}
+
+function fmtTime(t) {
+  const m = /^(\d{2}):(\d{2})$/.exec(t || "");
+  if (!m) return "";
+  const h = Number(m[1]);
+  return `${((h + 11) % 12) + 1}:${m[2]} ${h >= 12 ? "PM" : "AM"}`;
+}
+
 function esc(v) {
   return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -59,21 +71,23 @@ async function sendCateringTeamNotification(r) {
   const html = `<h2>New catering booking — ${esc(r.ref)}</h2>
 <table style="border-collapse:collapse;font-family:sans-serif;font-size:15px">
 <tr><td style="padding:6px 12px;font-weight:bold;vertical-align:top">Order</td><td style="padding:6px 12px"><ul style="margin:0;padding-left:18px">${itemsHtml(r.items)}</ul></td></tr>
+${row("Event title", r.eventTitle)}
 ${row("Event date", r.eventDate)}
+${row("Event time", fmtTime(r.eventTime))}
 ${row("Event type", r.eventType)}
-${row("Event address", r.eventAddress)}
+${row("Event address", r.eventAddress + (r.eventAddressVerified ? "" : "  (⚠ address not verified)"))}
 ${row("Budget", r.budgetNote)}
 ${row("Notes", r.notes)}
-${row("Contact name", r.contact.name)}
+${row("Organizer", r.contact.name)}
 ${row("Contact email", r.contact.email)}
-${row("Contact phone", r.contact.phone)}
+${row("Contact phone", fmtPhone(r.contact.phone))}
 ${row("Subtotal", "$" + Number(r.subtotal).toFixed(2))}
 ${row("Tax", "$" + Number(r.tax || 0).toFixed(2))}
 ${row("Estimated total (before tax)", "$" + Number(r.total).toFixed(2))}
 ${row("Reference", r.ref)}
 </table>`;
   return withRetry(`catering ${r.ref} team email`, () =>
-    notify.sendEmail(cateringRecipients(), `New catering booking ${r.ref} — ${r.eventDate} (${(r.items || []).reduce((n, i) => n + i.qty, 0)} sandwiches)`, html)
+    notify.sendEmail(cateringRecipients(), `New catering booking ${r.ref} — ${r.eventDate} (${(r.items || []).reduce((n, i) => n + i.qty, 0)} sandwiches)`, html, { replyTo: r.contact && r.contact.email })
   );
 }
 
@@ -81,17 +95,17 @@ ${row("Reference", r.ref)}
 async function sendCateringConfirmation(request) {
   await sendCateringTeamNotification(request);
 
-  const msg = `Your catering order (${itemsText(request.items)}) is booked for ${request.eventDate} at ${request.eventAddress}. Estimated total: $${request.total.toFixed(2)} + tax. We'll be in touch to confirm your details.`;
+  const msg = `Your catering order (${itemsText(request.items)}) is booked for ${request.eventDate}${request.eventTime ? " at " + fmtTime(request.eventTime) : ""} at ${request.eventAddress}. Estimated total: $${request.total.toFixed(2)} + tax. Someone will contact you in 24hrs.`;
   await withRetry(`catering ${request.ref} customer email`, () =>
     notify.sendEmail(
       request.contact.email,
       `Booking confirmed — Cleveland Smash Burgers Catering`,
-      `<h2>You're booked, ${esc(request.contact.name)}!</h2><p>Your catering order is booked for <strong>${esc(request.eventDate)}</strong> at ${esc(request.eventAddress)}:</p><ul>${itemsHtml(request.items)}</ul><p>Estimated total: $${request.total.toFixed(2)} (plus tax). We'll be in touch to confirm your details.</p><p>Reference: <strong>${esc(request.ref)}</strong></p><p>Questions? Reply to this email or call (216) 555-0142.</p>`
+      `<h2>You're booked, ${esc(request.contact.firstName || request.contact.name)}!</h2><p>Your catering order is booked for <strong>${esc(request.eventDate)}${request.eventTime ? " at " + esc(fmtTime(request.eventTime)) : ""}</strong> — ${esc(request.eventTitle)} — at ${esc(request.eventAddress)}:</p><ul>${itemsHtml(request.items)}</ul><p>Estimated total: $${request.total.toFixed(2)} (plus tax). Someone will contact you in 24hrs.</p><p>Reference: <strong>${esc(request.ref)}</strong></p><p>Questions? Reply to this email or call (216) 555-0142.</p>`
     )
   );
   if (request.contact.phone) {
     await withRetry(`catering ${request.ref} SMS`, () =>
-      notify.sendSMS(request.contact.phone, `Cleveland Smash Burgers: booking ${request.ref} confirmed. ${msg}`)
+      notify.sendSMS("+1" + String(request.contact.phone).replace(/\D/g, "").slice(-10), `Cleveland Smash Burgers: booking ${request.ref} confirmed. ${msg}`)
     );
   }
 }

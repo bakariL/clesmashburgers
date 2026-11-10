@@ -14,6 +14,7 @@ loadEnv();
 const db = require("./db");
 const notify = require("./notify");
 const notifications = require("./notifications");
+const address = require("./address");
 const clover = require("./clover");
 
 const PORT = process.env.PORT || 3000;
@@ -171,7 +172,7 @@ function buildCateringOrder(rawItems) {
     const dessertQty = whole(raw.dessertQty || 0);
     if ([qty, comboQty, dessertQty].some(Number.isNaN)) return { error: "Quantities must be whole numbers." };
     if (qty === 0) continue;
-    if (qty > 500) return { error: "For orders that large, please call us." };
+    if (qty > 10000) return { error: "The maximum is 10,000 per sandwich. For larger orders, please call us." };
     if (comboQty > qty) return { error: `You can't have more combos than ${m.name} sandwiches.` };
     if (dessertQty > qty) return { error: `You can't have more desserts than ${m.name} sandwiches.` };
 
@@ -224,32 +225,52 @@ async function pushCateringToClover(booking) {
 // We only do one catering event per day. A date is unavailable if either
 // a non-canceled booking already has it, or staff manually blocked it
 // (closed, already promised verbally, prepping for something else, etc.).
-async function isDateAvailable(date, { ignoreRef } = {}) {
-  const [bookings, blocked] = await Promise.all([db.getCateringRequests(), db.getBlockedDates()]);
-  const bookingConflict = bookings.some(
-    (b) => b.eventDate === date && b.status !== "canceled" && b.ref !== ignoreRef
-  );
-  const manuallyBlocked = blocked.some((b) => b.date === date);
-  return !bookingConflict && !manuallyBlocked;
+// Several events can be booked on the same day. A day is only unavailable
+// when staff manually block it (and it can't be in the past).
+async function isDateAvailable(date) {
+  const blocked = await db.getBlockedDates();
+  return !blocked.some((b) => b.date === date);
 }
 
-// Public version: just which dates are taken, no customer details — this
-// is called by anyone visiting the booking page, unauthenticated.
+// Public calendar: ONLY manually-blocked days. Never reveals other customers' events.
 async function getPublicCateringCalendar() {
-  const [bookings, blocked] = await Promise.all([db.getCateringRequests(), db.getBlockedDates()]);
-  const bookedDates = bookings.filter((b) => b.status !== "canceled").map((b) => b.eventDate);
-  const blockedDates = blocked.map((b) => b.date);
-  return { bookedDates, blockedDates };
+  const blocked = await db.getBlockedDates();
+  return { blockedDates: blocked.map((b) => b.date) };
 }
 
-// Kitchen-board version: full detail (who/ref/reason), kitchen-auth only.
+// Staff calendar: every event with its time, title and customer.
 async function getStaffCateringCalendar() {
   const [bookings, blocked] = await Promise.all([db.getCateringRequests(), db.getBlockedDates()]);
   const booked = bookings
     .filter((b) => b.status !== "canceled")
-    .map((b) => ({ date: b.eventDate, ref: b.ref, name: b.contact.name, status: b.status }));
+    .map((b) => ({ date: b.eventDate, time: b.eventTime || "", title: b.eventTitle || "", ref: b.ref, name: b.contact.name, status: b.status }));
   return { booked, blocked };
 }
+
+// ---- Input validation helpers ----
+const EMAIL_RE = /^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
+
+function validateContact(contact) {
+  if (!contact) return { error: "Contact details are required." };
+  const firstName = String(contact.firstName || "").trim().slice(0, 50);
+  const lastName = String(contact.lastName || "").trim().slice(0, 50);
+  if (!firstName || !lastName) return { error: "Please enter the event organizer's first and last name." };
+  const email = String(contact.email || "").trim();
+  if (email.length > 254 || !EMAIL_RE.test(email)) return { error: "Please enter a valid email address." };
+  const phone = String(contact.phone || "").replace(/\D/g, "");
+  if (phone.length !== 10) return { error: "Phone number must be exactly 10 digits." };
+  return { contact: { firstName, lastName, name: `${firstName} ${lastName}`, email, phone } };
+}
+
+const addressHits = new Map(); // ip -> { n, reset }
+function addressRateLimited(ip) {
+  const now = Date.now();
+  const rec = addressHits.get(ip);
+  if (!rec || rec.reset < now) { addressHits.set(ip, { n: 1, reset: now + 60000 }); return false; }
+  rec.n += 1;
+  return rec.n > 60;
+}
+
 
 function get(req) {
   return new URL(req.url, `http://${req.headers.host}`);
@@ -296,6 +317,26 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, kitchenAuthorized(req) ? 200 : 401, { ok: kitchenAuthorized(req) });
   }
 
+  // ---- Admin: send a TEST booking notification to the team inbox(es) ----
+  if (url.pathname === "/api/admin/test-notification" && req.method === "POST") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+    const sample = {
+      ref: "CATER-TEST",
+      items: [{ id: "cleveland-classic", name: "The Cleveland Classic", price: 10, qty: 10, comboQty: 2, dessertQty: 1, notes: "Sample special request" }],
+      subtotal: 120, tax: 0, total: 120,
+      eventDate: new Date().toISOString().slice(0, 10), eventTime: "12:00", eventTitle: "TEST — sample booking",
+      eventType: "Office / corporate", eventAddress: "3915 Carnegie Ave, Cleveland, OH 44115", eventAddressVerified: true,
+      budgetNote: "", notes: "This is a test of the booking notification email.",
+      contact: { firstName: "Test", lastName: "Customer", name: "Test Customer", email: "test@example.com", phone: "2165550100" },
+    };
+    const result = await notifications.sendCateringTeamNotification(sample);
+    return sendJSON(res, result && result.error ? 502 : 200, {
+      to: notifications.cateringRecipients(),
+      simulated: Boolean(result && result.simulated),
+      error: (result && result.error) || undefined,
+    });
+  }
+
   // ---- Admin: email a customer from the dashboard ----
   if (parts[0] === "api" && parts[1] === "admin" && parts[2] === "catering" && parts[4] === "email" && parts.length === 5 && req.method === "POST") {
     if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
@@ -319,6 +360,17 @@ const server = http.createServer(async (req, res) => {
     const updated = await db.updateCateringRequest(ref, { emails: [...(booking.emails || []), entry] });
     if (result.error) return sendJSON(res, 502, { error: `Email failed: ${result.error}`, request: updated });
     return sendJSON(res, 200, { request: updated, simulated: Boolean(result.simulated) });
+  }
+
+  // ---- Address autocomplete (public, rate-limited; provider key stays server-side) ----
+  if (url.pathname === "/api/address/suggest" && req.method === "GET") {
+    if (addressRateLimited(clientIp(req))) return sendJSON(res, 429, { error: "Too many lookups — slow down a moment." });
+    try {
+      return sendJSON(res, 200, await address.suggest(url.searchParams.get("q")));
+    } catch (e) {
+      console.error("Address lookup failed:", e.message);
+      return sendJSON(res, 502, { error: "Address lookup is unavailable right now." });
+    }
   }
 
   // ---- Catering: menu (public) ----
@@ -359,19 +411,26 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/api/catering" && req.method === "POST") {
     try {
       const body = await readBody(req);
-      const { eventDate, eventType, eventAddress, budgetNote, notes, contact } = body;
+      const { eventDate, eventType, eventAddress, budgetNote, notes } = body;
 
       const built = buildCateringOrder(body.items);
       if (built.error) return sendJSON(res, 400, { error: built.error });
 
-      if (!eventDate) return sendJSON(res, 400, { error: "Event date is required." });
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(eventDate || ""))) return sendJSON(res, 400, { error: "Event date is required." });
+      const todayLocal = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10); // Cleveland-ish (UTC-5)
+      if (eventDate < todayLocal) return sendJSON(res, 400, { error: "That date has already passed — please choose a future date." });
       if (!(await isDateAvailable(eventDate))) {
-        return sendJSON(res, 409, { error: "That date is already booked — please choose another." });
+        return sendJSON(res, 409, { error: "That date isn't available — please choose another." });
       }
-      if (!eventAddress) return sendJSON(res, 400, { error: "Event address is required." });
-      if (!contact || !contact.name || !contact.email || !contact.phone) {
-        return sendJSON(res, 400, { error: "Name, email, and phone are required." });
-      }
+      const eventTime = String(body.eventTime || "");
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(eventTime)) return sendJSON(res, 400, { error: "Please choose your event time." });
+      const eventTitle = String(body.eventTitle || "").trim().slice(0, 80);
+      if (!eventTitle) return sendJSON(res, 400, { error: "Please give your event a title." });
+      const addr = String(eventAddress || "").trim().slice(0, 200);
+      if (addr.length < 8 || !/\d/.test(addr)) return sendJSON(res, 400, { error: "Please enter the full event address." });
+      const vc = validateContact(body.contact);
+      if (vc.error) return sendJSON(res, 400, { error: vc.error });
+      const contact = vc.contact;
 
       const subtotal = built.subtotal; // estimate before tax; no online payment
 
@@ -383,8 +442,11 @@ const server = http.createServer(async (req, res) => {
         tax: 0,
         total: subtotal,
         eventDate,
+        eventTime,
+        eventTitle,
         eventType: eventType || "not specified",
-        eventAddress,
+        eventAddress: addr,
+        eventAddressVerified: body.addressVerified === true,
         budgetNote: String(budgetNote || "").slice(0, 300),
         notes: String(notes || "").slice(0, 1000),
         contact,

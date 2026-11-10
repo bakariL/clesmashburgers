@@ -419,8 +419,9 @@ button.cal-cell:hover { border-color: var(--crust); color: var(--crust); }
 .cal-cell.cal-past { color: #c9c9c9; background: #fafafa; }
 .cal-cell.cal-today { border-color: var(--ink); font-weight: 700; }
 .cal-cell.cal-selected { background: var(--crust); border-color: var(--crust); color: #fff; }
-.cal-cell.cal-booked { background: #f0f0f0; color: #a0a0a0; text-decoration: line-through; cursor: not-allowed; }
-.cal-cell.cal-blocked { background: #fbe1e1; color: var(--crust-dark); cursor: pointer; }
+.cal-cell.cal-events { background: #fff7e0; border-color: #e0b84a; font-weight: 700; }
+.cal-cell.cal-blocked { background: #fbe1e1; color: var(--crust-dark); cursor: not-allowed; }
+button.cal-cell.cal-blocked { cursor: pointer; }
 .calendar-legend {
   display: flex;
   gap: 16px;
@@ -429,7 +430,7 @@ button.cal-cell:hover { border-color: var(--crust); color: var(--crust); }
   color: var(--steel);
 }
 .cal-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; }
-.cal-dot-booked { background: #f0f0f0; border: 1px solid #c9c9c9; }
+.cal-dot-events { background: #fff7e0; border: 1px solid #e0b84a; }
 .cal-dot-blocked { background: #fbe1e1; border: 1px solid var(--crust); }
 
 .form-card {
@@ -757,3 +758,16 @@ footer {
 .email-log { border-left:3px solid var(--crust); padding:4px 0 4px 10px; margin:8px 0; font-size:0.88rem; }
 .email-log span { color:var(--steel); font-size:0.78rem; }
 @media (max-width: 640px) { .admin-grid { grid-template-columns:1fr; } }
+
+/* Event date/time summary + address autocomplete */
+.date-selected { margin-top:10px; font-size:0.92rem; }
+.addr-wrap { position:relative; }
+.addr-list { position:absolute; left:0; right:0; z-index:20; margin:2px 0 0; padding:0; list-style:none; background:#fff; border:1px solid var(--steel); box-shadow:0 8px 20px rgba(0,0,0,.15); max-height:260px; overflow:auto; }
+.addr-item, .addr-empty { padding:10px 12px; font-size:0.92rem; border-bottom:1px solid #eee; }
+.addr-item { cursor:pointer; }
+.addr-item:hover { background:#fbe1e1; }
+.addr-empty { color:var(--steel); }
+.addr-status { margin:6px 0 0; font-size:0.8rem; min-height:1em; }
+
+.qty-input { width:72px; min-height:36px; text-align:center; font-weight:700; font-size:1rem; border:1px solid var(--steel); border-radius:0; padding:0 4px; -moz-appearance:textfield; }
+.qty-input::-webkit-outer-spin-button, .qty-input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
