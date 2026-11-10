@@ -16,7 +16,7 @@ const FALLBACK_CATERING_MENU = {
 };
 
 const FALLBACK_LOCATIONS = [
-  { id: "cleveland", name: "Cleveland", address: "3915 Carnegie Ave, Cleveland, OH 44115", hours: "Mon–Thu 11am–11pm\nFri–Sat 11am–2am\nSun 12:30pm–9:30pm", phone: "(216) 555-0142" },
+  { id: "cleveland", name: "Cleveland", address: "3915 Carnegie Ave, Cleveland, OH 44115", hours: "Mon–Thu 11am–11pm\nFri–Sat 11am–2am\nSun 12:30pm–9:30pm", phone: "(216) 971-1884" },
 ];
 
 const state = {
@@ -163,7 +163,7 @@ function footer() {
         </div>
         <div>
           <h4>Connect</h4>
-          <p><a href="tel:+12165550142">(216) 555-0142</a><br>
+          <p><a href="tel:+12169711884">(216) 971-1884</a><br>
           <a href="${ORDER_URL}" target="_blank" rel="noopener">Order now →</a></p>
         </div>
       </div>
@@ -298,7 +298,7 @@ function viewCatering() {
           <h2 class="h-display" style="font-size:1.3rem; margin:0 0 12px;">2. Event Details</h2>
 
           <div class="field">
-            <label>Event date &amp; time <span class="hint">(tap a day to set your event's title and time — grayed-out days aren't available)</span></label>
+            <label>Event date &amp; requested drop off time <span class="hint">(tap a day to set your event's title and requested drop off time — grayed-out days aren't available)</span></label>
             <div id="cDateCalendar"><p style="color:var(--steel);">Loading calendar…</p></div>
             <input type="hidden" id="cDate" required>
             <input type="hidden" id="cTime">
@@ -318,10 +318,9 @@ function viewCatering() {
           </div>
 
           <div class="field addr-wrap">
-            <label for="cAddress">Event address <span class="hint">(start typing, then pick your address from the list)</span></label>
+            <label for="cAddress">Event address <span class="hint">(suggestions appear as you type)</span></label>
             <input type="text" id="cAddress" required placeholder="Street address" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="cAddressList">
             <ul id="cAddressList" class="addr-list" role="listbox" hidden></ul>
-            <p id="cAddressStatus" class="addr-status"></p>
           </div>
 
           <div class="field-row">
@@ -352,13 +351,14 @@ function viewCatering() {
             <textarea id="cNotes" placeholder="Parking, timing, dietary notes, etc."></textarea>
           </div>
 
-          <button type="submit" class="btn btn-primary btn-block">Book This Event — est. <span id="cSubmitTotal">$0.00</span></button>
+          <button type="submit" class="btn btn-primary btn-block">Book This Event — You Pay $0 Today</button>
+          <p class="pay-note"><strong>No cost to book.</strong> You pay $0 today. Booking your event is free — there's no charge to reserve your date.</p>
         </div>
       </form>
 
       <p style="text-align:center; font-size:0.88rem; color:var(--steel); max-width:60ch; margin:18px auto 0;">
         Trouble booking, or need something outside this menu?
-        <a href="tel:+12165550142" style="color:var(--crust);">Call (216) 555-0142</a> — we're happy to help.
+        <a href="tel:+12169711884" style="color:var(--crust);">Call (216) 971-1884</a> — we're happy to help.
       </p>
     </div>
   </section>`;
@@ -373,6 +373,7 @@ function renderCateringConfirmedDetail(req) {
       <div class="ref-code">${req.ref}</div>
       <p style="color:#5c5c5c;">A confirmation is on its way to ${escapeHtml(req.contact.email)}.</p>
       <p style="font-weight:700;">Someone will contact you in 24hrs.</p>
+      <p style="color:#5c5c5c;">You paid $0 today — there's no cost to book.</p>
 
       <div class="confirm-detail-card">
         ${(req.items || []).map(i => `
@@ -381,13 +382,13 @@ function renderCateringConfirmedDetail(req) {
         `).join("")}
         ${req.eventTitle ? `<div class="row"><span>Event</span><span>${escapeHtml(req.eventTitle)}</span></div>` : ""}
         <div class="row"><span>Event date</span><span>${req.eventDate}</span></div>
-        ${req.eventTime ? `<div class="row"><span>Event time</span><span>${fmtTime12(req.eventTime)}</span></div>` : ""}
+        ${req.eventTime ? `<div class="row"><span>Requested drop off time</span><span>${fmtTime12(req.eventTime)}</span></div>` : ""}
         <div class="row"><span>Address</span><span>${escapeHtml(req.eventAddress)}</span></div>
         <div class="row"><span>Estimated total (before tax)</span><span>${money(req.total)}</span></div>
       </div>
 
       <p style="font-size:0.9rem;">Want food for yourself too? <a href="${ORDER_URL}" target="_blank" rel="noopener" style="color:var(--crust); font-weight:700;">Order now →</a></p>
-      <p style="font-size:0.85rem; color:var(--steel);">Need to change anything? <a href="tel:+12165550142" style="color:var(--crust);">Call (216) 555-0142</a>.</p>
+      <p style="font-size:0.85rem; color:var(--steel);">Need to change anything? <a href="tel:+12169711884" style="color:var(--crust);">Call (216) 971-1884</a>.</p>
 
       <div class="hero-actions" style="justify-content:center;">
         <a href="#/" class="btn btn-dark">Back Home</a>
@@ -470,7 +471,7 @@ function viewKitchen() {
       <div class="section-head" style="margin-top:56px;">
         <div>
           <h2 class="h-display">Catering Calendar</h2>
-          <p>Multiple events can be booked on the same day. Tap any day to see its events (time, title, customer) and to block or reopen the whole day — customers never see each other's events.</p>
+          <p>Multiple events can be booked on the same day. Tap any day to see its events (drop off time, title, customer) and to block or reopen the whole day — customers never see each other's events.</p>
         </div>
       </div>
       <div id="kitchenCalendar">
@@ -540,9 +541,9 @@ function renderKitchenBoard(cateringRequests, cloverEnabled) {
               <h4>Event</h4>
               ${detail("Title", escapeHtml(r.eventTitle))}
               ${detail("Date", escapeHtml(r.eventDate))}
-              ${detail("Time", r.eventTime ? escapeHtml(fmtTime12(r.eventTime)) : "—")}
+              ${detail("Requested drop off", r.eventTime ? escapeHtml(fmtTime12(r.eventTime)) : "—")}
               ${detail("Type", escapeHtml(r.eventType))}
-              ${detail("Address", `${escapeHtml(r.eventAddress)}${r.eventAddressVerified === false ? ' <span style="color:var(--crust)">⚠ not verified</span>' : ''}`)}
+              ${detail("Address", escapeHtml(r.eventAddress))}
               ${detail("Budget", escapeHtml(r.budgetNote))}
               ${detail("Booked", fmtDateTime(r.createdAt))}
             </div>
@@ -681,7 +682,7 @@ function renderKitchenCalendar(booked, blocked) {
           <h3 class="h-display" style="margin-top:0;">${escapeHtml(longDate(dateStr))}</h3>
           ${blockedEntry ? `<p style="color:var(--crust); margin-top:0;">Blocked${blockedEntry.reason ? ` — ${escapeHtml(blockedEntry.reason)}` : ""}. Customers can't book this day.</p>` : ""}
           ${events.length ? `<div>${events.map(ev => `
-            <div class="email-log"><strong>${ev.time ? escapeHtml(fmtTime12(ev.time)) : "Time TBD"} — ${escapeHtml(ev.title || "(untitled)")}</strong>
+            <div class="email-log"><strong>${ev.time ? escapeHtml(fmtTime12(ev.time)) : "Drop off time TBD"} — ${escapeHtml(ev.title || "(untitled)")}</strong>
               <div style="font-size:0.85rem;">${escapeHtml(ev.name)} · ${escapeHtml(ev.ref)}</div></div>`).join("")}</div>`
             : '<p style="color:var(--steel);">No events booked this day.</p>'}
           <div id="dayBlockArea" style="margin-top:14px;">
@@ -1016,7 +1017,6 @@ function attachHandlers(route) {
       countEl.textContent = count >= min ? `${count} ✓` : `${count} / ${min} minimum`;
       countEl.style.color = count >= min ? "var(--pickle)" : "var(--crust)";
       document.getElementById("cTotalPreview").textContent = money(orderTotal());
-      document.getElementById("cSubmitTotal").textContent = money(orderTotal());
     };
 
     const bump = (attr, delta) => {
@@ -1065,7 +1065,7 @@ function attachHandlers(route) {
       document.getElementById("cChangeDay").addEventListener("click", () => openEventPopup(d));
     };
 
-    // Pop-up asking for the event's title and time for the tapped day.
+    // Pop-up asking for the event's title and requested drop off time for the tapped day.
     const openEventPopup = (dateStr) => {
       const overlay = document.createElement("div");
       overlay.className = "modal-overlay";
@@ -1080,7 +1080,7 @@ function attachHandlers(route) {
             <input type="text" id="evTitle" maxlength="80" placeholder="e.g. Smith Company Lunch" value="${escapeHtml(document.getElementById("cTitle").value)}">
           </div>
           <div class="field">
-            <label for="evTime">Event time</label>
+            <label for="evTime">Requested drop off time</label>
             <input type="time" id="evTime" value="${escapeHtml(document.getElementById("cTime").value || "12:00")}">
           </div>
           <button type="button" class="btn btn-primary btn-block" id="evSave">Save</button>
@@ -1094,7 +1094,7 @@ function attachHandlers(route) {
         const time = document.getElementById("evTime").value;
         const err = document.getElementById("evPopupError");
         if (!title) { err.innerHTML = `<div class="form-error-banner">Please give your event a title.</div>`; return; }
-        if (!time) { err.innerHTML = `<div class="form-error-banner">Please choose a time.</div>`; return; }
+        if (!time) { err.innerHTML = `<div class="form-error-banner">Please choose your requested drop off time.</div>`; return; }
         document.getElementById("cDate").value = dateStr;
         document.getElementById("cTime").value = time;
         document.getElementById("cTitle").value = title;
@@ -1131,26 +1131,15 @@ function attachHandlers(route) {
       phoneEl.value = fmtPhoneUS(phoneEl.value);
     });
 
-    // ---- Address autocomplete: must pick a suggestion to be "verified" ----
+    // ---- Address autocomplete: optional suggestions, free typing always allowed ----
     const addrEl = document.getElementById("cAddress");
     const listEl = document.getElementById("cAddressList");
-    const statusEl = document.getElementById("cAddressStatus");
-    let addrVerified = false;
-    let addrUnavailable = false;
     let addrTimer = null;
     let addrReq = 0;
 
-    const setAddrStatus = () => {
-      if (addrVerified) { statusEl.textContent = "✓ Address verified"; statusEl.style.color = "var(--pickle)"; }
-      else if (addrUnavailable) { statusEl.textContent = "Address lookup is unavailable — we'll verify your address with you."; statusEl.style.color = "var(--steel)"; }
-      else if (addrEl.value.trim().length) { statusEl.textContent = "Pick your address from the list to verify it."; statusEl.style.color = "var(--crust)"; }
-      else statusEl.textContent = "";
-    };
     const closeList = () => { listEl.hidden = true; listEl.innerHTML = ""; addrEl.setAttribute("aria-expanded", "false"); };
 
     addrEl.addEventListener("input", () => {
-      addrVerified = false;
-      setAddrStatus();
       clearTimeout(addrTimer);
       const q = addrEl.value.trim();
       if (q.length < 4) { closeList(); return; }
@@ -1161,31 +1150,28 @@ function attachHandlers(route) {
           if (!res.ok) throw new Error("lookup failed");
           const data = await res.json();
           if (mine !== addrReq) return;
-          addrUnavailable = false;
           const items = data.suggestions || [];
           if (!items.length) {
-            listEl.innerHTML = `<li class="addr-empty">No matches yet — keep typing the full street address.</li>`;
+            closeList();
+            return;
           } else {
             listEl.innerHTML = items.map((it, i) => `<li role="option" class="addr-item" data-i="${i}">${escapeHtml(it.label)}</li>`).join("");
             listEl.querySelectorAll(".addr-item").forEach(li => {
               li.addEventListener("mousedown", (ev) => {
                 ev.preventDefault();
                 addrEl.value = items[Number(li.dataset.i)].label;
-                addrVerified = true;
                 closeList();
-                setAddrStatus();
               });
             });
           }
           listEl.hidden = false;
           addrEl.setAttribute("aria-expanded", "true");
         } catch {
-          addrUnavailable = true;
-          closeList();
-          setAddrStatus();
+          closeList(); // lookup unavailable — they can just type the address
         }
       }, 250);
     });
+    addrEl.addEventListener("keydown", (e) => { if (e.key === "Escape" || e.key === "Tab") closeList(); });
     addrEl.addEventListener("blur", () => setTimeout(closeList, 150));
 
     fetch("/api/catering/calendar")
@@ -1226,7 +1212,6 @@ function attachHandlers(route) {
         eventTitle: document.getElementById("cTitle").value,
         eventType: document.getElementById("cType").value,
         eventAddress: document.getElementById("cAddress").value.trim(),
-        addressVerified: addrVerified,
         budgetNote: document.getElementById("cBudget").value.trim(),
         notes: document.getElementById("cNotes").value.trim(),
         contact: {
@@ -1248,9 +1233,8 @@ function attachHandlers(route) {
         errorBox.innerHTML = `<div class="form-error-banner">${msg}</div>`;
         errorBox.scrollIntoView({ behavior: "smooth", block: "center" });
       };
-      if (!payload.eventDate || !payload.eventTime || !payload.eventTitle) return fail("Please tap a day on the calendar and enter your event's title and time.");
+      if (!payload.eventDate || !payload.eventTime || !payload.eventTitle) return fail("Please tap a day on the calendar and enter your event's title and requested drop off time.");
       if (!payload.eventAddress) return fail("Please enter the event address.");
-      if (!addrVerified && !addrUnavailable) return fail("Please pick your event address from the suggestions list so we can verify it.");
       if (!payload.contact.firstName || !payload.contact.lastName) return fail("Please enter the organizer's first and last name.");
       if (payload.contact.phone.length !== 10) return fail("Phone number must be exactly 10 digits.");
       if (!EMAIL_RE.test(payload.contact.email)) return fail("Please enter a valid email address.");
@@ -1274,7 +1258,7 @@ function attachHandlers(route) {
       } catch (err) {
         errorBox.innerHTML = `<div class="form-error-banner">${err.message}</div>`;
         submitBtn.disabled = false;
-        submitBtn.innerHTML = `Book This Event — est. ${document.getElementById("cSubmitTotal").textContent}`;
+        submitBtn.textContent = "Book This Event — You Pay $0 Today";
         // If that date just became unavailable, refresh the calendar.
         if (err.message.toLowerCase().includes("isn't available")) {
           fetch("/api/catering/calendar")

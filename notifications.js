@@ -73,9 +73,9 @@ async function sendCateringTeamNotification(r) {
 <tr><td style="padding:6px 12px;font-weight:bold;vertical-align:top">Order</td><td style="padding:6px 12px"><ul style="margin:0;padding-left:18px">${itemsHtml(r.items)}</ul></td></tr>
 ${row("Event title", r.eventTitle)}
 ${row("Event date", r.eventDate)}
-${row("Event time", fmtTime(r.eventTime))}
+${row("Requested drop off time", fmtTime(r.eventTime))}
 ${row("Event type", r.eventType)}
-${row("Event address", r.eventAddress + (r.eventAddressVerified ? "" : "  (⚠ address not verified)"))}
+${row("Event address", r.eventAddress)}
 ${row("Budget", r.budgetNote)}
 ${row("Notes", r.notes)}
 ${row("Organizer", r.contact.name)}
@@ -95,12 +95,12 @@ ${row("Reference", r.ref)}
 async function sendCateringConfirmation(request) {
   await sendCateringTeamNotification(request);
 
-  const msg = `Your catering order (${itemsText(request.items)}) is booked for ${request.eventDate}${request.eventTime ? " at " + fmtTime(request.eventTime) : ""} at ${request.eventAddress}. Estimated total: $${request.total.toFixed(2)} + tax. Someone will contact you in 24hrs.`;
+  const msg = `Your catering order (${itemsText(request.items)}) is booked for ${request.eventDate} at ${request.eventAddress}${request.eventTime ? ` (requested drop off: ${fmtTime(request.eventTime)})` : ""}. Estimated total: $${request.total.toFixed(2)} + tax. Someone will contact you in 24hrs.`;
   await withRetry(`catering ${request.ref} customer email`, () =>
     notify.sendEmail(
       request.contact.email,
       `Booking confirmed — Cleveland Smash Burgers Catering`,
-      `<h2>You're booked, ${esc(request.contact.firstName || request.contact.name)}!</h2><p>Your catering order is booked for <strong>${esc(request.eventDate)}${request.eventTime ? " at " + esc(fmtTime(request.eventTime)) : ""}</strong> — ${esc(request.eventTitle)} — at ${esc(request.eventAddress)}:</p><ul>${itemsHtml(request.items)}</ul><p>Estimated total: $${request.total.toFixed(2)} (plus tax). Someone will contact you in 24hrs.</p><p>Reference: <strong>${esc(request.ref)}</strong></p><p>Questions? Reply to this email or call (216) 555-0142.</p>`
+      `<h2>You're booked, ${esc(request.contact.firstName || request.contact.name)}!</h2><p>Your catering order is booked for <strong>${esc(request.eventDate)}</strong> — ${esc(request.eventTitle)} — at ${esc(request.eventAddress)}.</p>${request.eventTime ? `<p>Requested drop off time: <strong>${esc(fmtTime(request.eventTime))}</strong></p>` : ""}<p>Your order:</p><ul>${itemsHtml(request.items)}</ul><p>Estimated total: $${request.total.toFixed(2)} (plus tax). Someone will contact you in 24hrs.</p><p>You paid $0 today — there's no cost to book.</p><p>Reference: <strong>${esc(request.ref)}</strong></p><p>Questions? Reply to this email or call (216) 971-1884.</p>`
     )
   );
   if (request.contact.phone) {

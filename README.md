@@ -19,7 +19,7 @@ Everything is optional; without env vars, texts/emails are logged to the console
 
 - Menu and prices live in `CATERING_MENU` in `server.js` (Cleveland Classic $10, Jive Turkey $10, Q Dawg $8; combo +$5 = fries + drink; dessert +$5). Prices are always computed on the server. The minimum is `CATERING_MIN`.
 - Several events can be booked on the same day (each with its own title and time). Customers only see days staff have blocked — never other customers' events. Staff can block/unblock whole days in the admin calendar.
-- The form validates: organizer first + last name, a real email, exactly 10 phone digits, and an address picked from autocomplete suggestions (served by `address.js`: Photon/OpenStreetMap by default, or Google Places if `GOOGLE_MAPS_API_KEY` is set).
+- The form validates: organizer first + last name, a real email, exactly 10 phone digits, and an address (optional autocomplete suggestions are served by `address.js`: Photon/OpenStreetMap by default, or Google Places if `GOOGLE_MAPS_API_KEY` is set).
 - On booking, the customer gets a confirmation at the email they typed, and the **full form** is emailed to `operations@clesmashburgers.com` and `bakarilewis@gmail.com` (override with `CATERING_NOTIFY_EMAILS`, comma-separated). Needs `RESEND_API_KEY` and a verified sending domain in Resend.
 - All messages are sent by `notifications.js` (retries 3x, never blocks a booking).
 

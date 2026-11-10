@@ -98,7 +98,7 @@ const LOCATIONS = [
     name: "Cleveland",
     address: "3915 Carnegie Ave, Cleveland, OH 44115",
     hours: "Mon–Thu 11am–11pm\nFri–Sat 11am–2am\nSun 12:30pm–9:30pm",
-    phone: "(216) 555-0142",
+    phone: "(216) 971-1884",
   },
 ];
 
@@ -325,7 +325,7 @@ const server = http.createServer(async (req, res) => {
       items: [{ id: "cleveland-classic", name: "The Cleveland Classic", price: 10, qty: 10, comboQty: 2, dessertQty: 1, notes: "Sample special request" }],
       subtotal: 120, tax: 0, total: 120,
       eventDate: new Date().toISOString().slice(0, 10), eventTime: "12:00", eventTitle: "TEST — sample booking",
-      eventType: "Office / corporate", eventAddress: "3915 Carnegie Ave, Cleveland, OH 44115", eventAddressVerified: true,
+      eventType: "Office / corporate", eventAddress: "3915 Carnegie Ave, Cleveland, OH 44115",
       budgetNote: "", notes: "This is a test of the booking notification email.",
       contact: { firstName: "Test", lastName: "Customer", name: "Test Customer", email: "test@example.com", phone: "2165550100" },
     };
@@ -423,7 +423,7 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 409, { error: "That date isn't available — please choose another." });
       }
       const eventTime = String(body.eventTime || "");
-      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(eventTime)) return sendJSON(res, 400, { error: "Please choose your event time." });
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(eventTime)) return sendJSON(res, 400, { error: "Please choose your requested drop off time." });
       const eventTitle = String(body.eventTitle || "").trim().slice(0, 80);
       if (!eventTitle) return sendJSON(res, 400, { error: "Please give your event a title." });
       const addr = String(eventAddress || "").trim().slice(0, 200);
@@ -446,7 +446,6 @@ const server = http.createServer(async (req, res) => {
         eventTitle,
         eventType: eventType || "not specified",
         eventAddress: addr,
-        eventAddressVerified: body.addressVerified === true,
         budgetNote: String(budgetNote || "").slice(0, 300),
         notes: String(notes || "").slice(0, 1000),
         contact,

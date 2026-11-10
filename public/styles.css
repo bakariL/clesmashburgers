@@ -771,3 +771,5 @@ footer {
 
 .qty-input { width:72px; min-height:36px; text-align:center; font-weight:700; font-size:1rem; border:1px solid var(--steel); border-radius:0; padding:0 4px; -moz-appearance:textfield; }
 .qty-input::-webkit-outer-spin-button, .qty-input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+
+.pay-note { margin:12px 0 0; font-size:0.85rem; color:#5c5c5c; text-align:center; line-height:1.45; }
