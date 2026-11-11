@@ -6,18 +6,19 @@ const ORDER_URL = "https://cleveland.picnicfood.com/s/cleveland-smash-burgers/39
 
 const FALLBACK_CATERING_MENU = {
   sandwiches: [
-    { id: "cleveland-classic", name: "The Cleveland Classic", price: 10 },
-    { id: "jive-turkey", name: "The Jive Turkey", price: 10 },
-    { id: "q-dawg", name: "The Q Dawg", price: 8 },
+    { id: "cleveland-classic", name: "The Cleveland Classic", price: 10, description: "Comes with American Cheese, grilled onions, Cleveland Kitchen Pickles, and Slappin Sauce" },
+    { id: "jive-turkey", name: "The Jive Turkey", price: 10, description: "Comes with American Cheese, grilled onions, Cleveland Kitchen Pickles, and Slappin Sauce" },
+    { id: "q-dawg", name: "The Q Dogg", price: 8 },
   ],
   minimum: 10,
   comboUpgrade: { price: 5, description: "Adds fries and a drink" },
+  friesUpgrade: { price: 3.5, description: "Adds fries only (no drink)" },
   dessertAddOn: { price: 5, description: "Add a dessert" },
   sides: [{ id: "pan-of-fries", name: "Pan of Fries", price: 25 }],
 };
 
 const FALLBACK_LOCATIONS = [
-  { id: "cleveland", name: "Cleveland", address: "3915 Carnegie Ave, Cleveland, OH 44115", hours: "Mon–Thu 11am–11pm\nFri–Sat 11am–2am\nSun 12:30pm–9:30pm", phone: "(216) 971-1884" },
+  { id: "cleveland", name: "Cleveland", address: "3915 Carnegie Ave, Cleveland, OH 44115", hours: "Mon–Thu 11am–11pm\nFri–Sat 11am–2am\nSun 12pm–9pm", phone: "(216) 971-1884" },
 ];
 
 const state = {
@@ -163,7 +164,7 @@ function footer() {
         </div>
         <div>
           <h4>Find Us</h4>
-          <p>3915 Carnegie Ave<br>Cleveland, OH 44115<br>Mon–Thu 11am–11pm<br>Fri–Sat 11am–2am<br>Sun 12:30pm–9:30pm<br><a href="#/locations">Directions →</a></p>
+          <p>3915 Carnegie Ave<br>Cleveland, OH 44115<br>Mon–Thu 11am–11pm<br>Fri–Sat 11am–2am<br>Sun 12pm–9pm<br><a href="#/locations">Directions →</a></p>
         </div>
         <div>
           <h4>Connect</h4>
@@ -200,7 +201,7 @@ function viewHome() {
       <div class="section-head">
         <div>
           <h2 class="h-display">Visit Us</h2>
-          <p>3915 Carnegie Ave, Cleveland<br>Mon–Thu 11am–11pm · Fri–Sat 11am–2am · Sun 12:30pm–9:30pm</p>
+          <p>3915 Carnegie Ave, Cleveland<br>Mon–Thu 11am–11pm · Fri–Sat 11am–2am · Sun 12pm–9pm</p>
         </div>
         <a href="#/locations" class="btn btn-dark">Get Directions</a>
       </div>
@@ -245,13 +246,16 @@ function sideRow(s) {
 function sandwichRow(m) {
   const combo = state.cateringMenu.comboUpgrade;
   const dessert = state.cateringMenu.dessertAddOn;
+  const fries = state.cateringMenu.friesUpgrade || FALLBACK_CATERING_MENU.friesUpgrade;
   const ctl = qtyCtl;
   return `
   <div class="pkg-card" data-sandwich="${m.id}">
     <div class="pkg-name">${m.name}</div>
     <div class="pkg-price">${money(m.price)} each</div>
+    ${m.description ? `<p class="pkg-desc">${escapeHtml(m.description)}.</p>` : ""}
     ${ctl("qty", m.id, "Quantity")}
     ${ctl("combo", m.id, `Make it a combo (+${money(combo.price)} each)`, combo.description)}
+    ${ctl("fries", m.id, `Add fries only (+${money(fries.price)} each)`, fries.description)}
     ${ctl("dessert", m.id, `Add a dessert (+${money(dessert.price)} each)`)}
     <div class="field" style="margin:10px 0 0;">
       <label for="cnote-${m.id}">Special requests / notes <span class="hint">(optional)</span></label>
@@ -279,7 +283,7 @@ function viewCatering() {
         <div class="section-head">
           <div>
             <h2 class="h-display">1. Build Your Order</h2>
-            <p><strong>${menu.minimum || 10}-person minimum</strong> — at least ${menu.minimum || 10} sandwiches per order. Combo upgrade is ${money(menu.comboUpgrade.price)} per sandwich (${menu.comboUpgrade.description.toLowerCase()}). Dessert is ${money(menu.dessertAddOn.price)} more.</p>
+            <p><strong>${menu.minimum || 10}-person minimum</strong> — at least ${menu.minimum || 10} sandwiches per order. Combo upgrade is ${money(menu.comboUpgrade.price)} per sandwich (${menu.comboUpgrade.description.toLowerCase()}); fries only is ${money((menu.friesUpgrade || FALLBACK_CATERING_MENU.friesUpgrade).price)}. Dessert is ${money(menu.dessertAddOn.price)} more.</p>
           </div>
         </div>
         <div class="pkg-grid">
@@ -372,7 +376,7 @@ function renderCateringConfirmedDetail(req) {
 
       <div class="confirm-detail-card">
         ${(req.items || []).map(i => `
-          <div class="row"><span>${i.qty}× ${escapeHtml(i.name)}${i.comboQty ? ` · ${i.comboQty} combo` : ""}${i.dessertQty ? ` · ${i.dessertQty} dessert` : ""}</span><span></span></div>
+          <div class="row"><span>${i.qty}× ${escapeHtml(i.name)}${i.comboQty ? ` · ${i.comboQty} combo` : ""}${i.friesQty ? ` · ${i.friesQty} fries only` : ""}${i.dessertQty ? ` · ${i.dessertQty} dessert` : ""}</span><span></span></div>
           ${i.notes ? `<div class="row" style="font-size:0.8rem; color:var(--steel);"><span>Request: ${escapeHtml(i.notes)}</span><span></span></div>` : ""}
         `).join("")}
         ${(req.sides || []).map(s => `<div class="row"><span>${s.qty}× ${escapeHtml(s.name)}</span><span></span></div>`).join("")}
@@ -546,7 +550,7 @@ function renderKitchenBoard(cateringRequests, cloverEnabled) {
 
           <h4>Order — ${r.guestCount || (r.items || []).reduce((n, i) => n + i.qty, 0)} sandwiches</h4>
           <ul style="margin:0; padding-left:18px; font-size:0.9rem;">
-            ${(r.items || []).map(i => `<li><strong>${i.qty}× ${escapeHtml(i.name)}</strong>${i.comboQty ? ` · ${i.comboQty} combo` : ''}${i.dessertQty ? ` · ${i.dessertQty} dessert` : ''}${i.notes ? `<br><em>Request: ${escapeHtml(i.notes)}</em>` : ''}</li>`).join('')}${(r.sides || []).map(s => `<li><strong>${s.qty}× ${escapeHtml(s.name)}</strong></li>`).join('')}
+            ${(r.items || []).map(i => `<li><strong>${i.qty}× ${escapeHtml(i.name)}</strong>${i.comboQty ? ` · ${i.comboQty} combo` : ''}${i.friesQty ? ` · ${i.friesQty} fries only` : ''}${i.dessertQty ? ` · ${i.dessertQty} dessert` : ''}${i.notes ? `<br><em>Request: ${escapeHtml(i.notes)}</em>` : ''}</li>`).join('')}${(r.sides || []).map(s => `<li><strong>${s.qty}× ${escapeHtml(s.name)}</strong></li>`).join('')}
           </ul>
           <div class="kv" style="margin-top:8px;"><span>Estimated total (before tax)</span><span><strong>${money(r.total || 0)}</strong></span></div>
           ${r.notes ? `<h4>Customer notes</h4><div style="font-size:0.9rem;">${escapeHtml(r.notes)}</div>` : ''}
@@ -992,18 +996,20 @@ function attachHandlers(route) {
   if (route === "catering") {
     const menu = state.cateringMenu;
     const qtys = {};
-    menu.sandwiches.forEach(m => { qtys[m.id] = { qty: 0, combo: 0, dessert: 0 }; });
+    menu.sandwiches.forEach(m => { qtys[m.id] = { qty: 0, combo: 0, fries: 0, dessert: 0 }; });
     const sideQtys = {};
     (menu.sides || []).forEach(s => { sideQtys[s.id] = 0; });
 
+    const friesPrice = (menu.friesUpgrade || FALLBACK_CATERING_MENU.friesUpgrade).price;
+    const clamp = (q) => { q.combo = Math.min(q.combo, q.qty); q.fries = Math.min(q.fries, q.qty - q.combo); q.dessert = Math.min(q.dessert, q.qty); };
     const orderTotal = () => menu.sandwiches.reduce((sum, m) => {
       const q = qtys[m.id];
-      return sum + m.price * q.qty + menu.comboUpgrade.price * q.combo + menu.dessertAddOn.price * q.dessert;
+      return sum + m.price * q.qty + menu.comboUpgrade.price * q.combo + friesPrice * q.fries + menu.dessertAddOn.price * q.dessert;
     }, 0) + (menu.sides || []).reduce((sum, s) => sum + s.price * sideQtys[s.id], 0);
 
     const updateTotal = () => {
       menu.sandwiches.forEach(m => {
-        ["qty", "combo", "dessert"].forEach(k => {
+        ["qty", "combo", "fries", "dessert"].forEach(k => {
           const el = document.getElementById(`cq-${k}-${m.id}`);
           // don't overwrite a box the customer is mid-typing in
           if (el && el !== document.activeElement) el.value = qtys[m.id][k];
@@ -1032,8 +1038,7 @@ function attachHandlers(route) {
       if (!q) return;
       q[kind] = Math.max(0, Math.min(MAX_QTY, q[kind] + delta));
       // combos and desserts can't exceed the number of sandwiches
-      if (kind === "qty") { q.combo = Math.min(q.combo, q.qty); q.dessert = Math.min(q.dessert, q.qty); }
-      else q[kind] = Math.min(q[kind], q.qty);
+      clamp(q);
       updateTotal();
     };
     // Typing a quantity directly (max 10,000)
@@ -1049,9 +1054,10 @@ function attachHandlers(route) {
           return updateTotal();
         }
         const q = qtys[id];
-        if (kind !== "qty") n = Math.min(n, q.qty); // combos/desserts can't exceed sandwiches
         q[kind] = n;
-        if (kind === "qty") { q.combo = Math.min(q.combo, n); q.dessert = Math.min(q.dessert, n); }
+        if (kind === "fries") q.fries = Math.min(n, q.qty - q.combo); // combo + fries-only can't exceed sandwiches
+        clamp(q);
+        n = q[kind];
         if (raw !== "" && String(n) !== raw) inp.value = n; // show the clamped value
         updateTotal();
       });
@@ -1182,6 +1188,7 @@ function attachHandlers(route) {
             id: m.id,
             qty: qtys[m.id].qty,
             comboQty: qtys[m.id].combo,
+            friesQty: qtys[m.id].fries,
             dessertQty: qtys[m.id].dessert,
             notes: document.getElementById(`cnote-${m.id}`).value.trim(),
           })),

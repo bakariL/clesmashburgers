@@ -21,7 +21,7 @@ function itemsHtml(items, sides) {
   const sideLis = (sides || []).map((s) => `<li><strong>${esc(s.qty)}× ${esc(s.name)}</strong></li>`).join("");
   return (items || [])
     .map((i) => {
-      const extras = [i.comboQty ? `${i.comboQty} as combo (+fries & drink)` : "", i.dessertQty ? `${i.dessertQty} with dessert` : ""].filter(Boolean).join(", ");
+      const extras = [i.comboQty ? `${i.comboQty} as combo (+fries & drink)` : "", i.friesQty ? `${i.friesQty} with fries only` : "", i.dessertQty ? `${i.dessertQty} with dessert` : ""].filter(Boolean).join(", ");
       return `<li><strong>${esc(i.qty)}× ${esc(i.name)}</strong>${extras ? ` — ${esc(extras)}` : ""}${i.notes ? `<br><em>Special request: ${esc(i.notes)}</em>` : ""}</li>`;
     })
     .join("") + sideLis;

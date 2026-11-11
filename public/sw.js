@@ -11,7 +11,7 @@
 // that: online visitors always get the current deploy, and the cache is
 // purely an offline fallback.
 
-const CACHE = "csb-shell-v7"; // bumped so every existing browser drops the old (cache-first) cache
+const CACHE = "csb-shell-v10"; // bumped so every existing browser drops the old (cache-first) cache
 const SHELL = ["/", "/styles.css", "/app.js", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {

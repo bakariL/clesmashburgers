@@ -79,11 +79,12 @@ function makeRefCode(prefix) {
 const CATERING_MENU = {
   minimum: 10, // total sandwiches per catering order
   sandwiches: [
-    { id: "cleveland-classic", name: "The Cleveland Classic", price: 10 },
-    { id: "jive-turkey", name: "The Jive Turkey", price: 10 },
-    { id: "q-dawg", name: "The Q Dawg", price: 8 },
+    { id: "cleveland-classic", name: "The Cleveland Classic", price: 10, description: "Comes with American Cheese, grilled onions, Cleveland Kitchen Pickles, and Slappin Sauce" },
+    { id: "jive-turkey", name: "The Jive Turkey", price: 10, description: "Comes with American Cheese, grilled onions, Cleveland Kitchen Pickles, and Slappin Sauce" },
+    { id: "q-dawg", name: "The Q Dogg", price: 8 },
   ],
   comboUpgrade: { price: 5, description: "Adds fries and a drink" },
+  friesUpgrade: { price: 3.5, description: "Adds fries only (no drink)" },
   dessertAddOn: { price: 5, description: "Add a dessert" },
   // Standalone sides — priced per pan, do NOT count toward the sandwich minimum.
   sides: [{ id: "pan-of-fries", name: "Pan of Fries", price: 25 }],
@@ -98,7 +99,7 @@ const LOCATIONS = [
     id: "cleveland",
     name: "Cleveland",
     address: "3915 Carnegie Ave, Cleveland, OH 44115",
-    hours: "Mon–Thu 11am–11pm\nFri–Sat 11am–2am\nSun 12:30pm–9:30pm",
+    hours: "Mon–Thu 11am–11pm\nFri–Sat 11am–2am\nSun 12pm–9pm",
     phone: "(216) 971-1884",
   },
 ];
@@ -170,18 +171,23 @@ function buildCateringOrder(rawItems, rawSides) {
     if (!m) return { error: "One of the items you picked isn't on our menu." };
     const qty = whole(raw.qty);
     const comboQty = whole(raw.comboQty || 0);
+    const friesQty = whole(raw.friesQty || 0);
     const dessertQty = whole(raw.dessertQty || 0);
-    if ([qty, comboQty, dessertQty].some(Number.isNaN)) return { error: "Quantities must be whole numbers." };
+    if ([qty, comboQty, friesQty, dessertQty].some(Number.isNaN)) return { error: "Quantities must be whole numbers." };
     if (qty === 0) continue;
     if (qty > 10000) return { error: "The maximum is 10,000 per sandwich. For larger orders, please call us." };
     if (comboQty > qty) return { error: `You can't have more combos than ${m.name} sandwiches.` };
+    if (comboQty + friesQty > qty) return { error: `Combos and fries-only can't add up to more than the ${m.name} sandwiches.` };
     if (dessertQty > qty) return { error: `You can't have more desserts than ${m.name} sandwiches.` };
 
-    items.push({ id: m.id, name: m.name, price: m.price, qty, comboQty, dessertQty, notes: String(raw.notes || "").trim().slice(0, 300) });
+    items.push({ id: m.id, name: m.name, price: m.price, qty, comboQty, friesQty, dessertQty, notes: String(raw.notes || "").trim().slice(0, 300) });
     sandwichCount += qty;
     subtotal += m.price * qty;
     if (comboQty) {
       subtotal += CATERING_MENU.comboUpgrade.price * comboQty;
+    }
+    if (friesQty) {
+      subtotal += CATERING_MENU.friesUpgrade.price * friesQty;
     }
     if (dessertQty) {
       subtotal += CATERING_MENU.dessertAddOn.price * dessertQty;
@@ -214,8 +220,8 @@ async function pushCateringToClover(booking) {
   if (!clover.isCloverConfigured()) return false;
   try {
     const lineItems = booking.items.map((i) => ({
-      name: `${i.name}${i.comboQty ? ` (${i.comboQty} combo)` : ""}${i.dessertQty ? ` (${i.dessertQty} dessert)` : ""}${i.notes ? ` — NOTE: ${i.notes}` : ""}`,
-      priceCents: Math.round((i.price * i.qty + 5 * i.comboQty + 5 * i.dessertQty) * 100),
+      name: `${i.name}${i.comboQty ? ` (${i.comboQty} combo)` : ""}${i.friesQty ? ` (${i.friesQty} fries only)` : ""}${i.dessertQty ? ` (${i.dessertQty} dessert)` : ""}${i.notes ? ` — NOTE: ${i.notes}` : ""}`,
+      priceCents: Math.round((i.price * i.qty + 5 * i.comboQty + CATERING_MENU.friesUpgrade.price * (i.friesQty || 0) + 5 * i.dessertQty) * 100),
     }));
     for (const s of booking.sides || []) lineItems.push({ name: `${s.qty}× ${s.name}`, priceCents: Math.round(s.price * s.qty * 100) });
     if (booking.tax > 0) lineItems.push({ name: "Tax", priceCents: Math.round(booking.tax * 100) });
@@ -330,7 +336,7 @@ const server = http.createServer(async (req, res) => {
     if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
     const sample = {
       ref: "CATER-TEST",
-      items: [{ id: "cleveland-classic", name: "The Cleveland Classic", price: 10, qty: 10, comboQty: 2, dessertQty: 1, notes: "Sample special request" }],
+      items: [{ id: "cleveland-classic", name: "The Cleveland Classic", price: 10, qty: 10, comboQty: 2, friesQty: 1, dessertQty: 1, notes: "Sample special request" }],
       subtotal: 120, tax: 0, total: 120,
       eventDate: new Date().toISOString().slice(0, 10), eventTime: "12:00", eventTitle: "TEST — sample booking",
       eventType: "Office / corporate", eventAddress: "3915 Carnegie Ave, Cleveland, OH 44115",
