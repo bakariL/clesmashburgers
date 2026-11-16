@@ -1,6 +1,6 @@
 // Cleveland Smash Burgers — server
 // Still zero npm dependencies: `node server.js` is all you need, even with
-// payments/SMS/email wired in — those talk to Stripe/Twilio/Resend over
+// SMS/email wired in — those talk to Twilio/Resend over
 // plain REST calls (fetch), not their SDKs.
 
 const http = require("http");
@@ -12,9 +12,9 @@ const { loadEnv } = require("./env");
 loadEnv();
 
 const db = require("./db");
-const payments = require("./payments");
 const notify = require("./notify");
 const notifications = require("./notifications");
+const analytics = require("./analytics");
 const clover = require("./clover");
 
 const PORT = process.env.PORT || 3000;
@@ -78,59 +78,152 @@ function makeRefCode(prefix) {
 // upgrade any of them to a combo (+$5, adds fries and a drink) or add a
 // dessert (+$5). Sandwiches take a special-request note.
 const CATERING_MENU = {
+  minimum: 10, // total sandwiches per catering order
   sandwiches: [
-    { id: "cleveland-classic", name: "The Cleveland Classic", price: 10 },
-    { id: "jive-turkey", name: "The Jive Turkey", price: 10 },
-    { id: "q-dawg", name: "The Q Dawg", price: 8 },
+    { id: "cleveland-classic", name: "The Cleveland Classic", price: 10, description: "Comes with American Cheese, grilled onions, Cleveland Kitchen Pickles, and Slappin Sauce" },
+    { id: "jive-turkey", name: "The Jive Turkey", price: 10, description: "Comes with American Cheese, grilled onions, Cleveland Kitchen Pickles, and Slappin Sauce" },
+    { id: "q-dawg", name: "The Q Dogg", price: 8 },
   ],
   comboUpgrade: { price: 5, description: "Adds fries and a drink" },
+  friesUpgrade: { price: 3.5, description: "Adds fries only (no drink)" },
   dessertAddOn: { price: 5, description: "Add a dessert" },
+  // Standalone sides — priced per pan, do NOT count toward the sandwich minimum.
+  sides: [{ id: "pan-of-fries", name: "Pan of Fries", price: 25 }],
 };
 
-const CATERING_STATUSES = ["pending_payment", "booked", "in_progress", "completed", "canceled"];
+const CATERING_STATUSES = ["booked", "in_progress", "completed", "paid", "canceled"];
 
 
-// Our 3 storefronts — fixed locations, not a rotating pop-up schedule.
+// Our storefront.
 const LOCATIONS = [
-  {
-    id: "parma",
-    name: "Parma",
-    address: "6164 Broadview Rd, Parma, OH 44134",
-    hours: "12:00 PM – 9:30 PM daily",
-    phone: "(216) 555-0142",
-  },
   {
     id: "cleveland",
     name: "Cleveland",
     address: "3915 Carnegie Ave, Cleveland, OH 44115",
-    hours: "12:00 PM – 9:30 PM daily",
-    phone: "(216) 555-0142",
-  },
-  {
-    id: "garfield-heights",
-    name: "Garfield Heights",
-    address: "4545 E. 131st St, Garfield Heights, OH 44105",
-    hours: "12:00 PM – 9:30 PM daily",
-    phone: "(216) 555-0142",
+    hours: "Mon–Thu 11am–11pm\nFri–Sat 11am–2am\nSun 12pm–9pm",
+    phone: "(216) 971-1884",
   },
 ];
 
-function kitchenAuthorized(req) {
-  const configured = process.env.KITCHEN_PASSWORD;
-  if (!configured) return true; // dev mode — no passcode set
-  return req.headers["x-kitchen-passcode"] === configured;
+// Catering minimum: total sandwiches (one per guest).
+const CATERING_MIN = 10;
+
+// ---- Admin auth: ONE credential, set in env (ADMIN_USERNAME / ADMIN_PASSWORD) ----
+// Login returns a signed, expiring token the dashboard sends as
+// "Authorization: Bearer <token>". If the env vars aren't set the admin
+// area is LOCKED (never open).
+const ADMIN_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+const loginFailures = new Map(); // ip -> { count, until }
+
+function adminConfigured() {
+  return Boolean(process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD);
 }
 
-const STRIPE_KEY_MISSING = { error: "Online payment isn't available right now. Please call the shop to order." };
+function adminKey() {
+  return crypto
+    .createHash("sha256")
+    .update(`${process.env.ADMIN_SESSION_SECRET || ""}|${process.env.ADMIN_USERNAME}|${process.env.ADMIN_PASSWORD}`)
+    .digest();
+}
+
+function safeEqual(a, b) {
+  const ha = crypto.createHash("sha256").update(String(a)).digest();
+  const hb = crypto.createHash("sha256").update(String(b)).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
+function signAdminToken() {
+  const payload = Buffer.from(JSON.stringify({ exp: Date.now() + ADMIN_TOKEN_TTL_MS })).toString("base64url");
+  const sig = crypto.createHmac("sha256", adminKey()).update(payload).digest("base64url");
+  return `${payload}.${sig}`;
+}
+
+function kitchenAuthorized(req) {
+  if (!adminConfigured()) return false;
+  const header = req.headers["authorization"] || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  const [payload, sig] = token.split(".");
+  if (!payload || !sig) return false;
+  const expected = crypto.createHmac("sha256", adminKey()).update(payload).digest("base64url");
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return false;
+  try {
+    return JSON.parse(Buffer.from(payload, "base64url").toString()).exp > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+function clientIp(req) {
+  return String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
+}
+
+// Validates an invoice from the admin form and computes every amount on
+// the server (never trust totals from the browser). Money is rounded to cents.
+const INVOICE_STATUSES = ["draft", "sent", "paid", "void"];
+function buildInvoice(body) {
+  body = body || {};
+  const customerName = String(body.customerName || "").trim().slice(0, 100);
+  if (!customerName) return { error: "Enter the customer's name." };
+  const customerEmail = String(body.customerEmail || "").trim();
+  if (customerEmail.length > 254 || !EMAIL_RE.test(customerEmail)) return { error: "Enter a valid customer email address." };
+  if (!Array.isArray(body.items) || body.items.length === 0) return { error: "Add at least one line item." };
+  if (body.items.length > 50) return { error: "An invoice can have at most 50 line items." };
+  const cents = (n) => Math.round(Number(n) * 100);
+  const items = [];
+  let subtotalC = 0;
+  for (const raw of body.items) {
+    const description = String(raw.description || "").trim().slice(0, 200);
+    const qty = Number(raw.qty);
+    const unit = Number(raw.unitPrice);
+    if (!description) return { error: "Every line item needs a description." };
+    if (!Number.isFinite(qty) || qty <= 0 || qty > 100000) return { error: `Quantity for "${description}" must be more than 0.` };
+    if (!Number.isFinite(unit) || unit < 0 || unit > 1000000) return { error: `Price for "${description}" must be $0 or more.` };
+    const amountC = Math.round(qty * cents(unit));
+    subtotalC += amountC;
+    items.push({ description, qty, unitPrice: cents(unit) / 100, amount: amountC / 100 });
+  }
+  const taxRate = body.taxRate === "" || body.taxRate == null ? 0 : Number(body.taxRate);
+  if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 100) return { error: "Tax rate must be between 0 and 100." };
+  const taxC = Math.round(subtotalC * taxRate / 100);
+  const dueDate = String(body.dueDate || "").trim();
+  if (dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return { error: "Due date is not valid." };
+  const issueDate = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+  if (dueDate && dueDate < issueDate) return { error: "Due date can't be in the past." };
+  return {
+    invoice: {
+      customerName, customerEmail, items,
+      subtotal: subtotalC / 100, taxRate, tax: taxC / 100, total: (subtotalC + taxC) / 100,
+      issueDate, dueDate,
+      notes: String(body.notes || "").trim().slice(0, 1000),
+      bookingRef: String(body.bookingRef || "").trim().slice(0, 40),
+      status: "draft", emails: [],
+    },
+  };
+}
+
+// Emails an invoice and records the attempt on it. Marks it "sent" only on
+// a real send (not when email isn't configured, and not on a failure).
+async function emailInvoice(number) {
+  const inv = await db.getInvoice(number);
+  if (!inv) return { error: "Invoice not found.", status: 404 };
+  if (inv.status === "void") return { error: "That invoice is void.", status: 400 };
+  const result = await notifications.sendInvoiceEmail(inv);
+  const at = new Date().toISOString();
+  const state = result.error ? `failed: ${result.error}` : result.simulated ? "not sent (email not configured)" : "sent";
+  const updated = await db.updateInvoice(number, (i) => ({
+    emails: [...(i.emails || []), { at, to: i.customerEmail, ...(notifications.invoiceCopyTo(i) ? { copy: notifications.invoiceCopyTo(i) } : {}), status: state }],
+    ...(state === "sent" ? { sentAt: at, status: i.status === "paid" ? "paid" : "sent" } : {}),
+  }));
+  return { invoice: updated, simulated: Boolean(result.simulated), error: result.error || null };
+}
 
 // Validates the customer's catering selection against CATERING_MENU and
 // prices it on the server (never trust prices from the browser). Returns
-// { error } or { items, subtotal, sandwichCount, stripeLines }.
-function buildCateringOrder(rawItems) {
+// { error } or { items, subtotal, sandwichCount }.
+function buildCateringOrder(rawItems, rawSides) {
   if (!Array.isArray(rawItems)) return { error: "Choose at least one sandwich." };
   const whole = (n) => (Number.isInteger(Number(n)) && Number(n) >= 0 ? Number(n) : NaN);
   const items = [];
-  const stripeLines = [];
   let subtotal = 0;
   let sandwichCount = 0;
 
@@ -139,29 +232,46 @@ function buildCateringOrder(rawItems) {
     if (!m) return { error: "One of the items you picked isn't on our menu." };
     const qty = whole(raw.qty);
     const comboQty = whole(raw.comboQty || 0);
+    const friesQty = whole(raw.friesQty || 0);
     const dessertQty = whole(raw.dessertQty || 0);
-    if ([qty, comboQty, dessertQty].some(Number.isNaN)) return { error: "Quantities must be whole numbers." };
+    if ([qty, comboQty, friesQty, dessertQty].some(Number.isNaN)) return { error: "Quantities must be whole numbers." };
     if (qty === 0) continue;
-    if (qty > 500) return { error: "For orders that large, please call us." };
+    if (qty > 10000) return { error: "The maximum is 10,000 per sandwich. For larger orders, please call us." };
     if (comboQty > qty) return { error: `You can't have more combos than ${m.name} sandwiches.` };
+    if (comboQty + friesQty > qty) return { error: `Combos and fries-only can't add up to more than the ${m.name} sandwiches.` };
     if (dessertQty > qty) return { error: `You can't have more desserts than ${m.name} sandwiches.` };
 
-    items.push({ id: m.id, name: m.name, price: m.price, qty, comboQty, dessertQty, notes: String(raw.notes || "").trim().slice(0, 300) });
+    items.push({ id: m.id, name: m.name, price: m.price, qty, comboQty, friesQty, dessertQty, notes: String(raw.notes || "").trim().slice(0, 300) });
     sandwichCount += qty;
     subtotal += m.price * qty;
-    stripeLines.push({ name: m.name, unitAmountCents: Math.round(m.price * 100), quantity: qty });
     if (comboQty) {
       subtotal += CATERING_MENU.comboUpgrade.price * comboQty;
-      stripeLines.push({ name: `Combo upgrade (fries + drink) — ${m.name}`, unitAmountCents: Math.round(CATERING_MENU.comboUpgrade.price * 100), quantity: comboQty });
+    }
+    if (friesQty) {
+      subtotal += CATERING_MENU.friesUpgrade.price * friesQty;
     }
     if (dessertQty) {
       subtotal += CATERING_MENU.dessertAddOn.price * dessertQty;
-      stripeLines.push({ name: `Dessert add-on — ${m.name}`, unitAmountCents: Math.round(CATERING_MENU.dessertAddOn.price * 100), quantity: dessertQty });
     }
   }
 
+  const sides = [];
+  for (const raw of Array.isArray(rawSides) ? rawSides : []) {
+    const s = CATERING_MENU.sides.find((x) => x.id === raw.id);
+    if (!s) return { error: "One of the sides you picked isn't on our menu." };
+    const qty = whole(raw.qty);
+    if (Number.isNaN(qty)) return { error: "Quantities must be whole numbers." };
+    if (qty === 0) continue;
+    if (qty > 10000) return { error: `The maximum is 10,000 per item. For larger orders, please call us.` };
+    sides.push({ id: s.id, name: s.name, price: s.price, qty });
+    subtotal += s.price * qty;
+  }
+
   if (items.length === 0) return { error: "Choose at least one sandwich." };
-  return { items, subtotal: Math.round(subtotal * 100) / 100, sandwichCount, stripeLines };
+  if (sandwichCount < CATERING_MIN) {
+    return { error: `Catering has a ${CATERING_MIN}-person minimum — please add ${CATERING_MIN - sandwichCount} more sandwich${CATERING_MIN - sandwichCount === 1 ? "" : "es"}.` };
+  }
+  return { items, sides, subtotal: Math.round(subtotal * 100) / 100, sandwichCount };
 }
 
 // Same idea for a catering booking — one summary line item for the whole
@@ -171,9 +281,10 @@ async function pushCateringToClover(booking) {
   if (!clover.isCloverConfigured()) return false;
   try {
     const lineItems = booking.items.map((i) => ({
-      name: `${i.name}${i.comboQty ? ` (${i.comboQty} combo)` : ""}${i.dessertQty ? ` (${i.dessertQty} dessert)` : ""}${i.notes ? ` — NOTE: ${i.notes}` : ""}`,
-      priceCents: Math.round((i.price * i.qty + 5 * i.comboQty + 5 * i.dessertQty) * 100),
+      name: `${i.name}${i.comboQty ? ` (${i.comboQty} combo)` : ""}${i.friesQty ? ` (${i.friesQty} fries only)` : ""}${i.dessertQty ? ` (${i.dessertQty} dessert)` : ""}${i.notes ? ` — NOTE: ${i.notes}` : ""}`,
+      priceCents: Math.round((i.price * i.qty + 5 * i.comboQty + CATERING_MENU.friesUpgrade.price * (i.friesQty || 0) + 5 * i.dessertQty) * 100),
     }));
+    for (const s of booking.sides || []) lineItems.push({ name: `${s.qty}× ${s.name}`, priceCents: Math.round(s.price * s.qty * 100) });
     if (booking.tax > 0) lineItems.push({ name: "Tax", priceCents: Math.round(booking.tax * 100) });
 
     const note = [
@@ -195,32 +306,46 @@ async function pushCateringToClover(booking) {
 // We only do one catering event per day. A date is unavailable if either
 // a non-canceled booking already has it, or staff manually blocked it
 // (closed, already promised verbally, prepping for something else, etc.).
-async function isDateAvailable(date, { ignoreRef } = {}) {
-  const [bookings, blocked] = await Promise.all([db.getCateringRequests(), db.getBlockedDates()]);
-  const bookingConflict = bookings.some(
-    (b) => b.eventDate === date && b.status !== "canceled" && b.ref !== ignoreRef
-  );
-  const manuallyBlocked = blocked.some((b) => b.date === date);
-  return !bookingConflict && !manuallyBlocked;
+// Several events can be booked on the same day. A day is only unavailable
+// when staff manually block it (and it can't be in the past).
+async function isDateAvailable(date) {
+  const blocked = await db.getBlockedDates();
+  return !blocked.some((b) => b.date === date);
 }
 
-// Public version: just which dates are taken, no customer details — this
-// is called by anyone visiting the booking page, unauthenticated.
+// Public calendar: ONLY manually-blocked days. Never reveals other customers' events.
 async function getPublicCateringCalendar() {
-  const [bookings, blocked] = await Promise.all([db.getCateringRequests(), db.getBlockedDates()]);
-  const bookedDates = bookings.filter((b) => b.status !== "canceled").map((b) => b.eventDate);
-  const blockedDates = blocked.map((b) => b.date);
-  return { bookedDates, blockedDates };
+  const blocked = await db.getBlockedDates();
+  return { blockedDates: blocked.map((b) => b.date) };
 }
 
-// Kitchen-board version: full detail (who/ref/reason), kitchen-auth only.
+// Staff calendar: every event with its time, title and customer.
 async function getStaffCateringCalendar() {
   const [bookings, blocked] = await Promise.all([db.getCateringRequests(), db.getBlockedDates()]);
   const booked = bookings
     .filter((b) => b.status !== "canceled")
-    .map((b) => ({ date: b.eventDate, ref: b.ref, name: b.contact.name, status: b.status }));
+    .map((b) => ({ date: b.eventDate, time: b.eventTime || "", title: b.eventTitle || "", ref: b.ref, name: b.contact.name, status: b.status }));
   return { booked, blocked };
 }
+
+// ---- Input validation helpers ----
+const EMAIL_RE = /^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
+
+function validateContact(contact) {
+  if (!contact) return { error: "Contact details are required." };
+  const firstName = String(contact.firstName || "").trim().slice(0, 50);
+  const lastName = String(contact.lastName || "").trim().slice(0, 50);
+  if (!firstName || !lastName) return { error: "Please enter the event organizer's first and last name." };
+  const NAME_RE = /^\p{L}[\p{L}\s'.\-]*$/u; // letters only (plus space, hyphen, apostrophe, period)
+  if (!NAME_RE.test(firstName) || !NAME_RE.test(lastName)) return { error: "Names can only contain letters." };
+  const email = String(contact.email || "").trim();
+  if (email.length > 254 || !EMAIL_RE.test(email)) return { error: "Please enter a valid email address." };
+  const phone = String(contact.phone || "").replace(/\D/g, "");
+  if (phone.length !== 10) return { error: "Phone number must be exactly 10 digits." };
+  return { contact: { firstName, lastName, name: `${firstName} ${lastName}`, email, phone } };
+}
+
+
 
 function get(req) {
   return new URL(req.url, `http://${req.headers.host}`);
@@ -241,21 +366,75 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 200, { enabled: clover.isCloverConfigured() });
   }
 
-  // ---- Stripe: public config (publishable key is safe to expose) ----
-  if (url.pathname === "/api/stripe-config" && req.method === "GET") {
-    return sendJSON(res, 200, {
-      enabled: payments.isStripeConfigured(),
-      publishableKey: payments.getPublishableKey(),
+  // ---- Admin login (single credential) ----
+  if (url.pathname === "/api/admin/login" && req.method === "POST") {
+    if (!adminConfigured()) {
+      return sendJSON(res, 503, { error: "Admin login isn't set up yet. Set ADMIN_USERNAME and ADMIN_PASSWORD in the server environment." });
+    }
+    const ip = clientIp(req);
+    const rec = loginFailures.get(ip);
+    if (rec && rec.until > Date.now()) {
+      return sendJSON(res, 429, { error: "Too many attempts. Try again in a few minutes." });
+    }
+    const body = await readBody(req).catch(() => ({}));
+    const ok = safeEqual(body.username || "", process.env.ADMIN_USERNAME) & safeEqual(body.password || "", process.env.ADMIN_PASSWORD);
+    if (!ok) {
+      const count = ((rec && rec.count) || 0) + 1;
+      loginFailures.set(ip, { count, until: count >= 5 ? Date.now() + 15 * 60 * 1000 : 0 });
+      return sendJSON(res, 401, { error: "Incorrect username or password." });
+    }
+    loginFailures.delete(ip);
+    return sendJSON(res, 200, { ok: true, token: signAdminToken(), expiresInMs: ADMIN_TOKEN_TTL_MS });
+  }
+
+  // ---- Admin: who am I / is my token still good ----
+  if (url.pathname === "/api/admin/session" && req.method === "GET") {
+    return sendJSON(res, kitchenAuthorized(req) ? 200 : 401, { ok: kitchenAuthorized(req) });
+  }
+
+  // ---- Admin: send a TEST booking notification to the team inbox(es) ----
+  if (url.pathname === "/api/admin/test-notification" && req.method === "POST") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+    const sample = {
+      ref: "CATER-TEST",
+      items: [{ id: "cleveland-classic", name: "The Cleveland Classic", price: 10, qty: 10, comboQty: 2, friesQty: 1, dessertQty: 1, notes: "Sample special request" }],
+      subtotal: 120, tax: 0, total: 120,
+      eventDate: new Date().toISOString().slice(0, 10), eventTime: "12:00", eventTitle: "TEST — sample booking",
+      eventType: "Office / corporate", eventAddress: "3915 Carnegie Ave, Cleveland, OH 44115",
+      notes: "This is a test of the booking notification email.",
+      contact: { firstName: "Test", lastName: "Customer", name: "Test Customer", email: "test@example.com", phone: "2165550100" },
+    };
+    const result = await notifications.sendCateringTeamNotification(sample);
+    return sendJSON(res, result && result.error ? 502 : 200, {
+      to: notifications.cateringRecipients(),
+      simulated: Boolean(result && result.simulated),
+      error: (result && result.error) || undefined,
     });
   }
 
-  // ---- Kitchen auth ----
-  if (url.pathname === "/api/kitchen/login" && req.method === "POST") {
+  // ---- Admin: email a customer from the dashboard ----
+  if (parts[0] === "api" && parts[1] === "admin" && parts[2] === "catering" && parts[4] === "email" && parts.length === 5 && req.method === "POST") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+    const ref = decodeURIComponent(parts[3]);
+    const booking = await db.getCateringRequest(ref);
+    if (!booking) return sendJSON(res, 404, { error: "Booking not found." });
     const body = await readBody(req).catch(() => ({}));
-    const configured = process.env.KITCHEN_PASSWORD;
-    if (!configured) return sendJSON(res, 200, { ok: true, open: true });
-    if (body.passcode === configured) return sendJSON(res, 200, { ok: true, open: false });
-    return sendJSON(res, 401, { ok: false, open: false, error: "Incorrect passcode." });
+    const subject = String(body.subject || "").trim().slice(0, 200);
+    const message = String(body.message || "").trim().slice(0, 5000);
+    if (!subject || !message) return sendJSON(res, 400, { error: "A subject and a message are required." });
+
+    const result = await notifications.sendCustomerEmail(booking, subject, message);
+    const entry = {
+      at: new Date().toISOString(),
+      to: booking.contact.email,
+      subject,
+      message,
+      status: result.error ? "failed" : result.simulated ? "not sent (email not configured)" : "sent",
+      error: result.error || undefined,
+    };
+    const updated = await db.updateCateringRequest(ref, { emails: [...(booking.emails || []), entry] });
+    if (result.error) return sendJSON(res, 502, { error: `Email failed: ${result.error}`, request: updated });
+    return sendJSON(res, 200, { request: updated, simulated: Boolean(result.simulated) });
   }
 
   // ---- Catering: menu (public) ----
@@ -292,119 +471,119 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 200, { removed });
   }
 
-  // ---- Catering: book + pay ----
+  // ---- Catering: book an event ----
   if (url.pathname === "/api/catering" && req.method === "POST") {
     try {
       const body = await readBody(req);
-      const { eventDate, eventType, eventAddress, budgetNote, notes, contact } = body;
+      const { eventDate, eventType, eventAddress, notes } = body;
 
-      const built = buildCateringOrder(body.items);
+      const built = buildCateringOrder(body.items, body.sides);
       if (built.error) return sendJSON(res, 400, { error: built.error });
 
-      if (!eventDate) return sendJSON(res, 400, { error: "Event date is required." });
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(eventDate || ""))) return sendJSON(res, 400, { error: "Event date is required." });
+      const todayLocal = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10); // Cleveland-ish (UTC-5)
+      if (eventDate < todayLocal) return sendJSON(res, 400, { error: "That date has already passed — please choose a future date." });
       if (!(await isDateAvailable(eventDate))) {
-        return sendJSON(res, 409, { error: "That date is already booked — please choose another." });
+        return sendJSON(res, 409, { error: "That date isn't available — please choose another." });
       }
-      if (payments.isStripeConfigured() && !payments.getPublishableKey()) {
-        console.error("Booking blocked: STRIPE_SECRET_KEY is set but STRIPE_PUBLISHABLE_KEY is missing.");
-        return sendJSON(res, 503, STRIPE_KEY_MISSING);
-      }
-      if (!eventAddress) return sendJSON(res, 400, { error: "Event address is required." });
-      if (!contact || !contact.name || !contact.email || !contact.phone) {
-        return sendJSON(res, 400, { error: "Name, email, and phone are required." });
-      }
+      const eventTime = String(body.eventTime || "");
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(eventTime)) return sendJSON(res, 400, { error: "Please choose your requested drop off time." });
+      const eventTitle = String(body.eventTitle || "").trim().slice(0, 80);
+      if (!eventTitle) return sendJSON(res, 400, { error: "Please give your event a title." });
+      const addr = String(eventAddress || "").trim().slice(0, 200);
+      if (addr.length < 8 || !/\d/.test(addr)) return sendJSON(res, 400, { error: "Please enter the full event address." });
+      const vc = validateContact(body.contact);
+      if (vc.error) return sendJSON(res, 400, { error: vc.error });
+      const contact = vc.contact;
 
-      const stripeOn = payments.isStripeConfigured();
-      const subtotal = built.subtotal; // pre-checkout estimate; verify-payment overwrites with Stripe's real total+tax
+      const subtotal = built.subtotal; // estimate before tax; no online payment
 
       const booking = {
         ref: makeRefCode("CATER"),
         items: built.items,
+        sides: built.sides,
         guestCount: built.sandwichCount,
         subtotal,
         tax: 0,
         total: subtotal,
         eventDate,
+        eventTime,
+        eventTitle,
         eventType: eventType || "not specified",
-        eventAddress,
-        budgetNote: String(budgetNote || "").slice(0, 300),
+        eventAddress: addr,
         notes: String(notes || "").slice(0, 1000),
         contact,
-        status: stripeOn ? "pending_payment" : "booked",
-        paid: !stripeOn,
+        status: "booked",
         createdAt: new Date().toISOString(),
       };
 
       await db.createCateringRequest(booking);
-
-      // Email the address they typed right away ("Book & Pay" was hit) —
-      // not awaited so it never slows the checkout; never throws.
-      if (stripeOn) notifications.sendCateringStarted(booking);
-
-      if (!stripeOn) {
-        await notifications.sendCateringConfirmation(booking);
-        const synced = await pushCateringToClover(booking);
-        const finalBooking = await db.updateCateringRequest(booking.ref, { cloverSynced: synced });
-        return sendJSON(res, 201, { request: finalBooking || booking });
-      }
-
-      try {
-        const origin = requestOrigin(req);
-        const session = await payments.createCheckoutSession({
-          lineItems: built.stripeLines.map((l) => ({ ...l, taxCode: payments.FOOD_TAX_CODE })),
-          returnUrl: `${origin}/#/catering-confirmed?ref=${booking.ref}&session_id={CHECKOUT_SESSION_ID}`,
-          customerEmail: contact.email,
-          metadata: { catering_ref: booking.ref },
-        });
-        await db.updateCateringRequest(booking.ref, { stripeSessionId: session.id });
-        return sendJSON(res, 201, { request: booking, clientSecret: session.client_secret });
-      } catch (e) {
-        console.error("Stripe checkout session failed:", e.message);
-        await db.updateCateringRequest(booking.ref, { status: "canceled", paid: false, paymentNote: "Stripe error: " + e.message });
-        return sendJSON(res, 502, { error: "We couldn't start payment right now. Please try again in a minute or call the shop. You were not charged." });
-      }
+      // Send the customer's confirmation + the team notification in the background so a slow or
+      // failing email provider never delays the booking; the outcome is saved on the booking.
+      notifications.sendCateringConfirmation(booking)
+        .then((r) => db.updateCateringRequest(booking.ref, { confirmationEmail: r.customerEmail, confirmationEmailAt: new Date().toISOString() }))
+        .catch((e) => console.error("Confirmation send failed:", e.message));
+      const synced = await pushCateringToClover(booking);
+      const finalBooking = await db.updateCateringRequest(booking.ref, { cloverSynced: synced });
+      return sendJSON(res, 201, { request: finalBooking || booking });
     } catch (e) {
       return sendJSON(res, 400, { error: "Couldn't read that booking. " + e.message });
     }
   }
 
-  // ---- Catering: verify payment after Stripe redirect ----
-  if (parts[0] === "api" && parts[1] === "catering" && parts[3] === "verify-payment" && req.method === "GET") {
-    const ref = decodeURIComponent(parts[2]);
-    const sessionId = url.searchParams.get("session_id");
-    const booking = await db.getCateringRequest(ref);
-    if (!booking) return sendJSON(res, 404, { error: "Booking not found." });
-    if (booking.paid) return sendJSON(res, 200, { request: booking });
-    if (!sessionId) return sendJSON(res, 400, { error: "Missing session id." });
-
-    try {
-      const session = await payments.retrieveCheckoutSession(sessionId);
-      if (session.payment_status === "paid") {
-        const updated = await db.updateCateringRequest(ref, {
-          status: "booked",
-          paid: true,
-          stripePaymentStatus: session.payment_status,
-          subtotal: Math.round((session.amount_subtotal || 0)) / 100,
-          tax: Math.round((session.total_details?.amount_tax || 0)) / 100,
-          total: Math.round((session.amount_total || 0)) / 100,
-        });
-        await notifications.sendCateringConfirmation(updated);
-        const synced = await pushCateringToClover(updated);
-        const withSync = await db.updateCateringRequest(ref, { cloverSynced: synced });
-        return sendJSON(res, 200, { request: withSync || updated });
-      }
-      return sendJSON(res, 200, { request: booking, paymentPending: true });
-    } catch (e) {
-      return sendJSON(res, 502, { error: "Could not verify payment: " + e.message });
-    }
-  }
-
-  // ---- Catering: single (used after Stripe redirect / kitchen detail) ----
+  // ---- Catering: single (kitchen detail) ----
   if (parts[0] === "api" && parts[1] === "catering" && parts.length === 3 && req.method === "GET") {
     const ref = decodeURIComponent(parts[2]);
     const booking = await db.getCateringRequest(ref);
     if (!booking) return sendJSON(res, 404, { error: "Booking not found." });
     return sendJSON(res, 200, { request: booking });
+  }
+
+  // ---- Finance & sales analytics (admin only) ----
+  if (url.pathname === "/api/admin/analytics" && req.method === "GET") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+    const [bookings, invoices] = await Promise.all([db.getCateringRequests(), db.getInvoices()]);
+    return sendJSON(res, 200, analytics.compute(bookings, invoices, CATERING_MENU));
+  }
+
+  // ---- Invoices (admin only) ----
+  if (parts[0] === "api" && parts[1] === "admin" && parts[2] === "invoices") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+
+    if (parts.length === 3 && req.method === "GET") {
+      return sendJSON(res, 200, { invoices: await db.getInvoices() });
+    }
+    if (parts.length === 3 && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const built = buildInvoice(body);
+      if (built.error) return sendJSON(res, 400, { error: built.error });
+      let invoice = await db.createInvoice(built.invoice);
+      if (!body.send) return sendJSON(res, 201, { invoice, simulated: false });
+      const out = await emailInvoice(invoice.number);
+      return sendJSON(res, out.error ? 502 : 201, { invoice: out.invoice || invoice, simulated: out.simulated, error: out.error });
+    }
+    const number = parts[3] ? decodeURIComponent(parts[3]) : "";
+    if (parts.length === 5 && parts[4] === "send" && req.method === "POST") {
+      const out = await emailInvoice(number);
+      if (out.status) return sendJSON(res, out.status, { error: out.error });
+      return sendJSON(res, out.error ? 502 : 200, { invoice: out.invoice, simulated: out.simulated, error: out.error });
+    }
+    if (parts.length === 4 && req.method === "PATCH") {
+      const body = await readBody(req).catch(() => ({}));
+      if (!INVOICE_STATUSES.includes(body.status)) return sendJSON(res, 400, { error: `Status must be one of: ${INVOICE_STATUSES.join(", ")}` });
+      const updated = await db.updateInvoice(number, (i) => ({ status: body.status, paidAt: body.status === "paid" ? (i.paidAt || new Date().toISOString()) : null }));
+      if (!updated) return sendJSON(res, 404, { error: "Invoice not found." });
+      // If paid invoices now cover the whole catering booking, mark the booking paid too.
+      if (body.status === "paid" && updated.bookingRef) {
+        const booking = await db.getCateringRequest(updated.bookingRef);
+        if (booking && !["paid", "canceled"].includes(booking.status)) {
+          const paidTotal = (await db.getInvoices()).filter((i) => i.bookingRef === booking.ref && i.status === "paid").reduce((s, i) => s + i.total, 0);
+          if (paidTotal + 0.001 >= booking.total) await db.updateCateringRequest(booking.ref, { status: "paid", paidAt: updated.paidAt });
+        }
+      }
+      return sendJSON(res, 200, { invoice: updated });
+    }
+    return sendJSON(res, 404, { error: "Not found." });
   }
 
   // ---- Catering: update status (kitchen) ----
@@ -415,7 +594,11 @@ const server = http.createServer(async (req, res) => {
     if (!CATERING_STATUSES.includes(body.status)) {
       return sendJSON(res, 400, { error: `Status must be one of: ${CATERING_STATUSES.join(", ")}` });
     }
-    const updated = await db.updateCateringRequest(ref, { status: body.status });
+    const existing = await db.getCateringRequest(ref);
+    const patch = { status: body.status };
+    if (body.status === "paid") patch.paidAt = (existing && existing.paidAt) || new Date().toISOString();
+    else if (existing && existing.paidAt) patch.paidAt = null;
+    const updated = await db.updateCateringRequest(ref, patch);
     if (!updated) return sendJSON(res, 404, { error: "Request not found." });
     return sendJSON(res, 200, { request: updated });
   }
@@ -444,6 +627,14 @@ const server = http.createServer(async (req, res) => {
 
   // ---- static files ----
   if (req.method === "GET") {
+    if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
+      // private dashboard: serve the app shell, keep it out of search engines
+      return fs.readFile(path.join(PUBLIC_DIR, "index.html"), (e, data) => {
+        if (e) { res.writeHead(404); return res.end("Not found"); }
+        res.writeHead(200, { "Content-Type": MIME[".html"], "X-Robots-Tag": "noindex, nofollow", "Cache-Control": "no-store" });
+        res.end(data);
+      });
+    }
     let filePath = url.pathname === "/" ? "/index.html" : url.pathname;
     filePath = path.join(PUBLIC_DIR, decodeURIComponent(filePath));
 
@@ -478,12 +669,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Cleveland Smash Burgers running at http://localhost:${PORT}`);
-  console.log(`Payments: ${payments.isStripeConfigured() ? "Stripe live (test/live key set)" : "test mode (no STRIPE_SECRET_KEY set)"}`);
-  if (payments.isStripeConfigured() !== Boolean(payments.getPublishableKey())) {
-    console.warn("\n!!! STRIPE MISCONFIGURED: need BOTH STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY (same Stripe account). Checkout is disabled until fixed. !!!\n");
-  }
   console.log(`Catering notifications go to: ${notifications.cateringRecipients().join(", ")}`);
   console.log(`SMS: ${notify.smsConfigured() ? "Twilio live" : "console-logged (no Twilio env vars set)"}`);
   console.log(`Email: ${notify.emailConfigured() ? "Resend live" : "console-logged (no RESEND_API_KEY set)"}`);
-  console.log(`Kitchen board: ${process.env.KITCHEN_PASSWORD ? "passcode required" : "open, no passcode set"}`);
+  console.log(`Admin dashboard (/admin): ${adminConfigured() ? "login required" : "LOCKED — set ADMIN_USERNAME and ADMIN_PASSWORD to enable"}`);
 });

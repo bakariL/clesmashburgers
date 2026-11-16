@@ -41,11 +41,11 @@ setup — **every one is optional**:
 
 | Variable | Leave blank and... |
 |---|---|
-| `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` | payments stay in test mode (no real charge, no payment UI shown) |
+| `CATERING_NOTIFY_EMAILS` | team booking emails go to operations@ and bakarilewis@ (the defaults) |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` | texts get logged, not sent |
 | `RESEND_API_KEY` / `RESEND_FROM_EMAIL` | emails get logged, not sent |
 | `CLOVER_MERCHANT_ID` / `CLOVER_API_TOKEN` | orders just aren't pushed to your POS |
-| `KITCHEN_PASSWORD` | the kitchen board is open with no login |
+| `ADMIN_USERNAME` + `ADMIN_PASSWORD` | the /admin dashboard stays locked (no one can log in) |
 
 Set as many or as few as you're ready for — you can always add the
 rest later from the Render dashboard (Environment tab) without
@@ -65,7 +65,7 @@ exist, your repo root is nested one level too deep (back to step 1).
 Render builds and starts the service automatically. Once it's live,
 you'll get a URL like `https://cle-smash-burgers.onrender.com` —
 open it and confirm the homepage loads, then place a test order and
-check it shows up on `/#/kitchen`.
+check it shows up on `/admin`.
 
 ## 6. Connect your domain
 

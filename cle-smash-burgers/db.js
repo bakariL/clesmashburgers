@@ -59,6 +59,7 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 const ordersStore = new JSONStore(path.join(DATA_DIR, "orders.json"));
 const cateringStore = new JSONStore(path.join(DATA_DIR, "catering.json"));
 const blockedDatesStore = new JSONStore(path.join(DATA_DIR, "blocked-dates.json"));
+const invoicesStore = new JSONStore(path.join(DATA_DIR, "invoices.json"));
 
 // ---- Orders ----
 
@@ -143,7 +144,43 @@ function getBlockedDates() {
   return blockedDatesStore.read();
 }
 
+// ---- Invoices ----
+// Numbers are sequential (INV-0001, INV-0002 …) and assigned inside the
+// serialized mutate() so two invoices can never get the same number.
+
+function createInvoice(invoice) {
+  return invoicesStore.mutate((data) => {
+    const max = data.reduce((m, i) => Math.max(m, parseInt(String(i.number).replace(/\D/g, ""), 10) || 0), 0);
+    const number = `INV-${String(max + 1).padStart(4, "0")}`;
+    const created = { ...invoice, number, createdAt: new Date().toISOString() };
+    data.unshift(created);
+    return created;
+  });
+}
+
+function getInvoice(number) {
+  return invoicesStore.read().then((data) => data.find((i) => i.number === number) || null);
+}
+
+function getInvoices() {
+  return invoicesStore.read();
+}
+
+function updateInvoice(number, patchOrFn) {
+  return invoicesStore.mutate((data) => {
+    const inv = data.find((i) => i.number === number);
+    if (!inv) return null;
+    const patch = typeof patchOrFn === "function" ? patchOrFn(inv) : patchOrFn;
+    Object.assign(inv, patch, { updatedAt: new Date().toISOString() });
+    return inv;
+  });
+}
+
 module.exports = {
+  createInvoice,
+  getInvoice,
+  getInvoices,
+  updateInvoice,
   createOrder,
   updateOrder,
   getOrder,

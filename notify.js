@@ -57,7 +57,7 @@ async function sendEmail(to, subject, html, opts = {}) {
         Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ from, to, subject, html, ...(opts.replyTo ? { reply_to: opts.replyTo } : {}) }),
+      body: JSON.stringify({ from, to, subject, html, ...(opts.replyTo ? { reply_to: opts.replyTo } : {}), ...(opts.bcc ? { bcc: opts.bcc } : {}) }),
     });
     const data = await res.json();
     if (!res.ok) {

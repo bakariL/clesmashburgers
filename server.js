@@ -14,6 +14,7 @@ loadEnv();
 const db = require("./db");
 const notify = require("./notify");
 const notifications = require("./notifications");
+const analytics = require("./analytics");
 const clover = require("./clover");
 
 const PORT = process.env.PORT || 3000;
@@ -90,7 +91,7 @@ const CATERING_MENU = {
   sides: [{ id: "pan-of-fries", name: "Pan of Fries", price: 25 }],
 };
 
-const CATERING_STATUSES = ["booked", "in_progress", "completed", "canceled"];
+const CATERING_STATUSES = ["booked", "in_progress", "completed", "paid", "canceled"];
 
 
 // Our storefront.
@@ -210,7 +211,7 @@ async function emailInvoice(number) {
   const at = new Date().toISOString();
   const state = result.error ? `failed: ${result.error}` : result.simulated ? "not sent (email not configured)" : "sent";
   const updated = await db.updateInvoice(number, (i) => ({
-    emails: [...(i.emails || []), { at, to: i.customerEmail, status: state }],
+    emails: [...(i.emails || []), { at, to: i.customerEmail, ...(notifications.invoiceCopyTo(i) ? { copy: notifications.invoiceCopyTo(i) } : {}), status: state }],
     ...(state === "sent" ? { sentAt: at, status: i.status === "paid" ? "paid" : "sent" } : {}),
   }));
   return { invoice: updated, simulated: Boolean(result.simulated), error: result.error || null };
@@ -538,6 +539,13 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 200, { request: booking });
   }
 
+  // ---- Finance & sales analytics (admin only) ----
+  if (url.pathname === "/api/admin/analytics" && req.method === "GET") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+    const [bookings, invoices] = await Promise.all([db.getCateringRequests(), db.getInvoices()]);
+    return sendJSON(res, 200, analytics.compute(bookings, invoices, CATERING_MENU));
+  }
+
   // ---- Invoices (admin only) ----
   if (parts[0] === "api" && parts[1] === "admin" && parts[2] === "invoices") {
     if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
@@ -563,8 +571,16 @@ const server = http.createServer(async (req, res) => {
     if (parts.length === 4 && req.method === "PATCH") {
       const body = await readBody(req).catch(() => ({}));
       if (!INVOICE_STATUSES.includes(body.status)) return sendJSON(res, 400, { error: `Status must be one of: ${INVOICE_STATUSES.join(", ")}` });
-      const updated = await db.updateInvoice(number, { status: body.status, ...(body.status === "paid" ? { paidAt: new Date().toISOString() } : {}) });
+      const updated = await db.updateInvoice(number, (i) => ({ status: body.status, paidAt: body.status === "paid" ? (i.paidAt || new Date().toISOString()) : null }));
       if (!updated) return sendJSON(res, 404, { error: "Invoice not found." });
+      // If paid invoices now cover the whole catering booking, mark the booking paid too.
+      if (body.status === "paid" && updated.bookingRef) {
+        const booking = await db.getCateringRequest(updated.bookingRef);
+        if (booking && !["paid", "canceled"].includes(booking.status)) {
+          const paidTotal = (await db.getInvoices()).filter((i) => i.bookingRef === booking.ref && i.status === "paid").reduce((s, i) => s + i.total, 0);
+          if (paidTotal + 0.001 >= booking.total) await db.updateCateringRequest(booking.ref, { status: "paid", paidAt: updated.paidAt });
+        }
+      }
       return sendJSON(res, 200, { invoice: updated });
     }
     return sendJSON(res, 404, { error: "Not found." });
@@ -578,7 +594,11 @@ const server = http.createServer(async (req, res) => {
     if (!CATERING_STATUSES.includes(body.status)) {
       return sendJSON(res, 400, { error: `Status must be one of: ${CATERING_STATUSES.join(", ")}` });
     }
-    const updated = await db.updateCateringRequest(ref, { status: body.status });
+    const existing = await db.getCateringRequest(ref);
+    const patch = { status: body.status };
+    if (body.status === "paid") patch.paidAt = (existing && existing.paidAt) || new Date().toISOString();
+    else if (existing && existing.paidAt) patch.paidAt = null;
+    const updated = await db.updateCateringRequest(ref, patch);
     if (!updated) return sendJSON(res, 404, { error: "Request not found." });
     return sendJSON(res, 200, { request: updated });
   }

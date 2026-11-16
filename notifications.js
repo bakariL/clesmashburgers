@@ -137,6 +137,12 @@ function longDateStr(iso) {
   return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).toLocaleDateString("en-US", { timeZone: "UTC", year: "numeric", month: "long", day: "numeric" });
 }
 
+// Who gets the private copy of every emailed invoice (none if that's the customer).
+function invoiceCopyTo(inv) {
+  const copyTo = (process.env.INVOICE_COPY_TO || "operations@clesmashburgers.com").trim();
+  return copyTo && copyTo.toLowerCase() !== String(inv.customerEmail).toLowerCase() ? copyTo : "";
+}
+
 // Emails an invoice to the customer. Never throws — returns the notify result.
 async function sendInvoiceEmail(inv) {
   const payInfo = process.env.INVOICE_PAYMENT_INSTRUCTIONS || "To pay, reply to this email or call (216) 971-1884.";
@@ -161,11 +167,14 @@ async function sendInvoiceEmail(inv) {
   <p style="margin-top:20px">${esc(payInfo)}</p>
   <p style="color:#666;font-size:13px">Thank you for choosing Cleveland Smash Burgers!</p></div>`;
   const replyTo = process.env.ADMIN_REPLY_TO || cateringRecipients()[0];
+  // A private copy goes to operations (bcc, so the customer doesn't see it).
+  const copyTo = invoiceCopyTo(inv);
+  const bcc = copyTo ? [copyTo] : undefined;
   try {
-    return await notify.sendEmail(inv.customerEmail, `Invoice ${inv.number} from Cleveland Smash Burgers — ${money2(inv.total)}`, html, { replyTo });
+    return await notify.sendEmail(inv.customerEmail, `Invoice ${inv.number} from Cleveland Smash Burgers — ${money2(inv.total)}`, html, { replyTo, bcc });
   } catch (e) {
     return { error: e.message };
   }
 }
 
-module.exports = { sendInvoiceEmail, sendCustomerEmail, sendCateringConfirmation, sendCateringTeamNotification, cateringRecipients };
+module.exports = { invoiceCopyTo, sendInvoiceEmail, sendCustomerEmail, sendCateringConfirmation, sendCateringTeamNotification, cateringRecipients };

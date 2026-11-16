@@ -419,8 +419,9 @@ button.cal-cell:hover { border-color: var(--crust); color: var(--crust); }
 .cal-cell.cal-past { color: #c9c9c9; background: #fafafa; }
 .cal-cell.cal-today { border-color: var(--ink); font-weight: 700; }
 .cal-cell.cal-selected { background: var(--crust); border-color: var(--crust); color: #fff; }
-.cal-cell.cal-booked { background: #f0f0f0; color: #a0a0a0; text-decoration: line-through; cursor: not-allowed; }
-.cal-cell.cal-blocked { background: #fbe1e1; color: var(--crust-dark); cursor: pointer; }
+.cal-cell.cal-events { background: #fff7e0; border-color: #e0b84a; font-weight: 700; }
+.cal-cell.cal-blocked { background: #fbe1e1; color: var(--crust-dark); cursor: not-allowed; }
+button.cal-cell.cal-blocked { cursor: pointer; }
 .calendar-legend {
   display: flex;
   gap: 16px;
@@ -429,7 +430,7 @@ button.cal-cell:hover { border-color: var(--crust); color: var(--crust); }
   color: var(--steel);
 }
 .cal-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; }
-.cal-dot-booked { background: #f0f0f0; border: 1px solid #c9c9c9; }
+.cal-dot-events { background: #fff7e0; border: 1px solid #e0b84a; }
 .cal-dot-blocked { background: #fbe1e1; border: 1px solid var(--crust); }
 
 .form-card {
@@ -696,7 +697,6 @@ footer {
 }
 /* Kitchen-only status colors — a functional grey/red/black ramp, not
    brand chrome, chosen so staff can tell states apart at a glance. */
-.status-badge.status-pending_payment { background: var(--crust); color: #fff; }
 .status-badge.status-received, .status-badge.status-new { background: #2b2b2b; color: #fff; }
 .status-badge.status-in_progress, .status-badge.status-contacted { background: #6e6e6e; color: #fff; }
 .status-badge.status-ready, .status-badge.status-booked { background: var(--char); color: #fff; }
@@ -740,3 +740,74 @@ footer {
 .qty-ctl { display:flex; align-items:center; gap:10px; flex-shrink:0; }
 .qty-ctl .btn-sm { min-width:36px; min-height:36px; padding:0; line-height:1; font-size:1.1rem; }
 .qty-val { min-width:24px; text-align:center; font-weight:700; }
+
+/* Home: install card app icon */
+.app-icon { width:96px; height:96px; border-radius:22px; box-shadow:0 4px 14px rgba(0,0,0,.25); flex-shrink:0; object-fit:cover; }
+
+/* Admin dashboard */
+.admin-card .kitchen-card-body h4 { margin:14px 0 6px; font-size:0.78rem; letter-spacing:.08em; text-transform:uppercase; color:var(--steel); }
+.admin-card .kitchen-card-body h4:first-child { margin-top:0; }
+.admin-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 24px; }
+.kv { display:flex; gap:10px; justify-content:space-between; font-size:0.9rem; padding:2px 0; }
+.kv > span:first-child { color:var(--steel); flex-shrink:0; }
+.kv > span:last-child { text-align:right; overflow-wrap:anywhere; }
+.kv a { color:var(--crust); }
+.admin-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:12px; }
+.compose-panel { margin-top:14px; padding-top:14px; border-top:1px solid #e3e3e3; }
+.compose-panel textarea { min-height:140px; }
+.email-log { border-left:3px solid var(--crust); padding:4px 0 4px 10px; margin:8px 0; font-size:0.88rem; }
+.email-log span { color:var(--steel); font-size:0.78rem; }
+@media (max-width: 640px) { .admin-grid { grid-template-columns:1fr; } }
+
+/* Event date/time summary */
+.date-selected { margin-top:10px; font-size:0.92rem; }
+
+.qty-input { width:72px; min-height:36px; text-align:center; font-weight:700; font-size:1rem; border:1px solid var(--steel); border-radius:0; padding:0 4px; -moz-appearance:textfield; }
+.qty-input::-webkit-outer-spin-button, .qty-input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+
+.pay-note { margin:12px 0 0; font-size:0.85rem; color:#5c5c5c; text-align:center; line-height:1.45; }
+
+.pkg-desc { margin: 4px 0 10px; font-size: 0.9rem; color: #5c5c5c; line-height: 1.4; }
+
+/* ---------- Admin invoices ---------- */
+.status-badge.status-inv-draft { background: #e2e2e2; color: #2b2b2b; }
+.status-badge.status-inv-sent { background: var(--char); color: #fff; }
+.status-badge.status-inv-paid { background: var(--pickle, #2e7d32); color: #fff; }
+.status-badge.status-inv-void { background: #f0f0f0; color: #8a8a8a; text-decoration: line-through; }
+.inv-line { display: grid; grid-template-columns: 1fr 70px 90px 80px 36px; gap: 6px; align-items: center; margin-bottom: 6px; }
+.inv-line input { min-width: 0; }
+.inv-amt { text-align: right; font-size: 0.9rem; }
+@media (max-width: 600px) {
+  .inv-line { grid-template-columns: 1fr 60px 80px; }
+  .inv-line .inv-amt { grid-column: 1 / 3; text-align: left; }
+  .inv-line .inv-rm { justify-self: end; }
+}
+
+/* ---------- Admin finance panel ---------- */
+.status-badge.status-paid { background: var(--pickle, #2e7d32); color: #fff; }
+.fin-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.fin-tile { background: #fff; border: 1px solid #e2e2e2; border-radius: 3px; padding: 12px 14px; }
+.fin-hero { background: var(--ink, #0a0a0a); border-color: var(--ink, #0a0a0a); color: #fff; }
+.fin-hero .fin-label, .fin-hero .fin-sub { color: #cfcfcf; }
+.fin-alert { border-color: var(--crust, #e2131b); }
+.fin-label { font-size: 0.72rem; letter-spacing: .06em; text-transform: uppercase; color: var(--steel, #6b6b6b); }
+.fin-value { font-size: 1.5rem; font-weight: 800; line-height: 1.2; margin-top: 2px; }
+.fin-sub { font-size: 0.78rem; color: var(--steel, #6b6b6b); margin-top: 2px; }
+.fin-up { color: var(--pickle, #2e7d32); font-weight: 700; }
+.fin-down { color: var(--crust, #e2131b); font-weight: 700; }
+.fin-h { margin: 22px 0 10px; font-size: 0.8rem; letter-spacing: .08em; text-transform: uppercase; color: var(--steel, #6b6b6b); }
+.fin-chart { display: flex; align-items: stretch; gap: 6px; height: 200px; padding: 22px 6px 0; background: #fff; border: 1px solid #e2e2e2; border-radius: 3px; margin-bottom: 12px; overflow-x: auto; }
+.fin-bar { flex: 1 1 0; min-width: 38px; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; position: relative; }
+.fin-bar-fill { width: 100%; background: var(--crust, #e2131b); border-radius: 2px 2px 0 0; order: 1; }
+.fin-bar-val { font-size: 0.66rem; font-weight: 700; order: 0; margin-bottom: 2px; white-space: nowrap; }
+.fin-bar-lbl { font-size: 0.7rem; color: var(--steel, #6b6b6b); order: 2; padding: 4px 0; }
+.fin-chart .fin-bar { height: 100%; }
+.fin-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; background: #fff; border: 1px solid #e2e2e2; margin-bottom: 8px; }
+.fin-table th { text-align: left; font-size: 0.72rem; letter-spacing: .05em; text-transform: uppercase; color: var(--steel, #6b6b6b); padding: 8px 10px; border-bottom: 1px solid #e2e2e2; background: #f7f7f7; }
+.fin-table td { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+.fin-meter { height: 5px; background: #eee; border-radius: 3px; margin-top: 4px; }
+.fin-meter span { display: block; height: 100%; background: var(--ink, #0a0a0a); border-radius: 3px; }
+.fin-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.fin-note { font-size: 0.82rem; color: #444; margin: 6px 0; }
+.fin-rule { border: none; border-top: 2px solid #e2e2e2; margin: 30px 0 24px; }
+@media (max-width: 760px) { .fin-cols { grid-template-columns: 1fr; } .fin-value { font-size: 1.25rem; } }

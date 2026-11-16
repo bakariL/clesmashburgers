@@ -33,7 +33,7 @@ const state = {
   kitchenCalMonth: new Date().getMonth(),
 };
 
-const CATERING_STATUSES = ["booked", "in_progress", "completed", "canceled"];
+const CATERING_STATUSES = ["booked", "in_progress", "completed", "paid", "canceled"];
 let kitchenPollTimer = null;
 
 function money(n) {
@@ -168,7 +168,7 @@ function footer() {
         </div>
         <div>
           <h4>Connect</h4>
-          <p><a href="tel:+12169711884">(216) 971-1884</a><br>
+          <p><a href="tel:+12166007895">(216) 600-7895</a><br>
           <a href="${ORDER_URL}" target="_blank" rel="noopener">Order now →</a></p>
         </div>
       </div>
@@ -464,6 +464,8 @@ function viewKitchen() {
         <button class="btn btn-dark" id="testEmailBtn" style="margin-right:8px;">Send test notification</button>
         <button class="btn btn-secondary" id="kitchenLogoutBtn" style="color:var(--ink); border-color:var(--steel);">Log Out</button>
       </div>
+      <div id="financePanel" class="finance"><p style="color:var(--steel);">Loading finances…</p></div>
+
       <div id="kitchenBoard">
         <p style="color:var(--steel);">Loading…</p>
       </div>
@@ -621,11 +623,12 @@ function startKitchenPolling() {
   clearInterval(kitchenPollTimer);
   const load = async () => {
     try {
-      const [cateringRes, cloverRes, calRes, invRes] = await Promise.all([
+      const [cateringRes, cloverRes, calRes, invRes, anaRes] = await Promise.all([
         adminFetch("/api/catering"),
         adminFetch("/api/clover/status"),
         adminFetch("/api/catering/calendar/staff"),
         adminFetch("/api/admin/invoices"),
+        adminFetch("/api/admin/analytics"),
       ]);
       if (cateringRes.status === 401 || calRes.status === 401) {
         adminLogout();
@@ -646,6 +649,9 @@ function startKitchenPolling() {
         attachKitchenStatusHandlers();
       }
 
+      const anaData = await anaRes.json().catch(() => null);
+      const finEl = document.getElementById("financePanel");
+      if (finEl && anaData && anaData.totals) { state.analytics = anaData; finEl.innerHTML = renderFinancePanel(anaData); const csvBtn = document.getElementById("exportCsvBtn"); if (csvBtn) csvBtn.addEventListener("click", exportRevenueCsv); }
       const invData = await invRes.json().catch(() => ({ invoices: [] }));
       state.invoiceCache = invData.invoices || [];
       const invEl = document.getElementById("invoiceList");
@@ -734,6 +740,100 @@ function rerenderBoard() {
   attachKitchenStatusHandlers();
 }
 
+// ---------------- Finance & analytics (admin) ----------------
+
+const usd = (n) => Number(n || 0).toLocaleString("en-US", { style: "currency", currency: "USD" });
+const monthLabel = (key, long) => {
+  const [y, m] = key.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", ...(long ? { year: "numeric" } : {}) });
+};
+
+function renderFinancePanel(a) {
+  const t = a.totals, rc = a.receivables, h = a.health;
+  const mom = t.monthOverMonthPct;
+  const tile = (label, value, sub = "", cls = "") => `<div class="fin-tile ${cls}"><div class="fin-label">${label}</div><div class="fin-value">${value}</div>${sub ? `<div class="fin-sub">${sub}</div>` : ""}</div>`;
+  const max = Math.max(1, ...a.monthly.map(m => m.collected));
+  const bars = a.monthly.map(m => `
+    <div class="fin-bar" title="${escapeHtml(monthLabel(m.month, true))}: ${usd(m.collected)} from ${m.count} paid">
+      <div class="fin-bar-val">${m.collected ? usd(Math.round(m.collected)).replace(".00", "") : ""}</div>
+      <div class="fin-bar-fill" style="height:${Math.max(m.collected ? 3 : 0, Math.round(m.collected / max * 100))}%"></div>
+      <div class="fin-bar-lbl">${escapeHtml(monthLabel(m.month))}</div>
+    </div>`).join("");
+  const topMax = Math.max(1, ...a.items.top.map(i => i.qty));
+  const table = (head, rows) => `<table class="fin-table"><thead><tr>${head.map((x, i) => `<th${i ? ' style="text-align:right"' : ""}>${x}</th>`).join("")}</tr></thead><tbody>${rows || `<tr><td colspan="${head.length}" style="color:var(--steel)">Nothing yet.</td></tr>`}</tbody></table>`;
+
+  return `
+  <div class="section-head" style="margin-bottom:12px;"><div><h2 class="h-display">Finances &amp; Sales</h2>
+    <p>Money collected counts invoices marked <strong>paid</strong> and catering events set to <strong>paid</strong> (each event is counted once).</p></div>
+    <button class="btn btn-dark btn-sm" id="exportCsvBtn">⬇ Download paid revenue (CSV)</button></div>
+
+  <div class="fin-tiles">
+    ${tile("Collected — all time", usd(t.collectedAll), `${t.paidCount} paid ${t.paidCount === 1 ? "order" : "orders"}`, "fin-hero")}
+    ${tile("This month", usd(t.thisMonth), mom == null ? "" : `<span class="${mom >= 0 ? "fin-up" : "fin-down"}">${mom >= 0 ? "▲" : "▼"} ${Math.abs(mom)}% vs last month</span>`)}
+    ${tile("Last month", usd(t.lastMonth))}
+    ${tile("Year to date", usd(t.ytd))}
+    ${tile("Avg paid order", usd(t.avgOrder), t.bestMonth ? `Best month: ${escapeHtml(monthLabel(t.bestMonth.month, true))} (${usd(t.bestMonth.collected)})` : "")}
+    ${tile("Tax collected", usd(t.taxCollected), "from paid invoices")}
+  </div>
+
+  <h3 class="fin-h">Money still to collect</h3>
+  <div class="fin-tiles">
+    ${tile("Invoices awaiting payment", usd(rc.invoicesAwaiting.amount), `${rc.invoicesAwaiting.count} sent`)}
+    ${tile("Overdue invoices", usd(rc.invoicesOverdue.amount), `${rc.invoicesOverdue.count} past due`, rc.invoicesOverdue.count ? "fin-alert" : "")}
+    ${tile("Events done, not paid", usd(rc.completedUnpaid.amount), `${rc.completedUnpaid.count} completed events`, rc.completedUnpaid.count ? "fin-alert" : "")}
+    ${tile("Bookings not yet paid", usd(rc.bookingsUnpaid.amount), `${rc.bookingsUnpaid.count} open bookings`)}
+    ${tile("Next 30 days", usd(rc.next30Days.amount), `${rc.next30Days.count} events on the calendar`)}
+    ${tile("Draft invoices", usd(rc.invoiceDrafts.amount), `${rc.invoiceDrafts.count} not emailed yet`)}
+  </div>
+
+  <h3 class="fin-h">Money collected by month (last 12 months)</h3>
+  <div class="fin-chart" role="img" aria-label="Bar chart of money collected per month">${bars}</div>
+  ${table(["Month", "Collected", "Paid orders", "Avg order"], [...a.monthly].reverse().filter(m => m.count || m.collected).map(m => `<tr><td>${escapeHtml(monthLabel(m.month, true))}</td><td style="text-align:right">${usd(m.collected)}</td><td style="text-align:right">${m.count}</td><td style="text-align:right">${usd(m.avgOrder)}</td></tr>`).join(""))}
+
+  <div class="fin-cols">
+    <div>
+      <h3 class="fin-h">Best sellers (paid orders)</h3>
+      ${table(["Item", "Sold", "Revenue"], a.items.top.map(i => `<tr><td>${escapeHtml(i.description)}<div class="fin-meter"><span style="width:${Math.round(i.qty / topMax * 100)}%"></span></div></td><td style="text-align:right">${i.qty}</td><td style="text-align:right">${usd(i.revenue)}</td></tr>`).join(""))}
+      ${a.items.sandwichDemand.length ? `<p class="fin-note"><strong>Sandwich demand (all active bookings):</strong> ${a.items.sandwichDemand.map(s => `${escapeHtml(s.name)} ${s.qty}`).join(" · ")}</p>` : ""}
+      <p class="fin-note"><strong>Add-on rates</strong> (per sandwich): combo ${a.items.attachRates.combo}% · fries only ${a.items.attachRates.friesOnly}% · dessert ${a.items.attachRates.dessert}%</p>
+    </div>
+    <div>
+      <h3 class="fin-h">Top customers</h3>
+      ${table(["Customer", "Bookings", "Paid"], a.topCustomers.map(c => `<tr><td>${escapeHtml(c.name)}<div class="fin-sub">${escapeHtml(c.email)}</div></td><td style="text-align:right">${c.bookings}</td><td style="text-align:right">${usd(c.collected)}</td></tr>`).join(""))}
+      <h3 class="fin-h">By event type</h3>
+      ${table(["Type", "Bookings", "Paid"], a.eventTypes.map(e => `<tr><td>${escapeHtml(e.type)}</td><td style="text-align:right">${e.bookings}</td><td style="text-align:right">${usd(e.collected)}</td></tr>`).join(""))}
+    </div>
+  </div>
+
+  <h3 class="fin-h">Business health</h3>
+  <div class="fin-tiles">
+    ${tile("Avg booking value", usd(h.avgBookingValue), "active bookings")}
+    ${tile("Avg sandwiches / event", h.avgSandwichesPerBooking)}
+    ${tile("Cancellation rate", `${h.cancelRatePct}%`, `${h.canceled} of ${h.bookingsTotal} · ${usd(h.lostToCancellations)} lost`)}
+    ${tile("Repeat customers", `${h.repeatCustomerPct}%`, "booked more than once")}
+    ${tile("Avg booking lead time", h.avgLeadDays == null ? "—" : `${h.avgLeadDays} days`, "booking → event")}
+    ${tile("Busiest event day", escapeHtml(h.busiestWeekday || "—"))}
+  </div>
+  <hr class="fin-rule">`;
+}
+
+function exportRevenueCsv() {
+  const a = state.analytics;
+  if (!a) return;
+  const q = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+  const rows = [["Date paid (ET)", "Source", "Reference", "Customer", "Email", "Amount", "Tax", "Booking", "Event type", "Items"]];
+  for (const r of a.records) {
+    const d = new Date(r.date).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    rows.push([d, r.type, r.id, r.customer, r.email, r.amount.toFixed(2), r.tax.toFixed(2), r.bookingRef, r.eventType, r.items]);
+  }
+  const csv = rows.map(r => r.map(q).join(",")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  const link = document.createElement("a");
+  link.href = url; link.download = `paid-revenue-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // ---------------- Invoices (admin) ----------------
 
 function renderInvoiceList(invoices) {
@@ -753,7 +853,7 @@ function renderInvoiceList(invoices) {
           ${inv.items.map(i => `<li>${escapeHtml(i.qty)}× ${escapeHtml(i.description)} — ${money(i.amount)}</li>`).join("")}
         </ul>
         ${inv.taxRate ? `<div class="kv"><span>Tax (${escapeHtml(inv.taxRate)}%)</span><span>${money(inv.tax)}</span></div>` : ""}
-        ${(inv.emails && inv.emails.length) ? `<h4>Emailed</h4>${inv.emails.map(e => `<div class="email-log"><span>${fmtDateTime(e.at)} · ${escapeHtml(e.to)} · ${escapeHtml(e.status)}</span></div>`).join("")}` : ""}
+        ${(inv.emails && inv.emails.length) ? `<h4>Emailed</h4>${inv.emails.map(e => `<div class="email-log"><span>${fmtDateTime(e.at)} · ${escapeHtml(e.to)}${e.copy ? ` (copy to ${escapeHtml(e.copy)})` : ""} · ${escapeHtml(e.status)}</span></div>`).join("")}` : ""}
       </div>
       <div class="admin-actions">
         ${inv.status !== "void" ? `<button type="button" class="btn btn-dark btn-sm" data-inv-send="${inv.number}">${inv.sentAt ? "✉ Resend" : "✉ Email invoice"}</button>` : ""}

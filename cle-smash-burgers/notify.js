@@ -41,21 +41,23 @@ async function sendSMS(to, body) {
   }
 }
 
-async function sendEmail(to, subject, html) {
+async function sendEmail(to, subject, html, opts = {}) {
   if (!emailConfigured()) {
     console.log(`[DEV] Would email ${to} — "${subject}"`);
     return { simulated: true };
   }
-  const from = process.env.RESEND_FROM_EMAIL || "orders@clesmashburgers.com";
+  const rawFrom = process.env.RESEND_FROM_EMAIL || "orders@clesmashburgers.com";
+  // Show "Cleveland Smash Burgers" as the sender name unless a full "Name <addr>" was configured.
+  const from = rawFrom.includes("<") ? rawFrom : `Cleveland Smash Burgers <${rawFrom}>`;
 
   try {
-    const res = await fetch("https://api.resend.com/emails", {
+    const res = await fetch(process.env.RESEND_API_URL || "https://api.resend.com/emails", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ from, to, subject, html }),
+      body: JSON.stringify({ from, to, subject, html, ...(opts.replyTo ? { reply_to: opts.replyTo } : {}), ...(opts.bcc ? { bcc: opts.bcc } : {}) }),
     });
     const data = await res.json();
     if (!res.ok) {
