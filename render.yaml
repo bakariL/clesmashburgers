@@ -33,6 +33,8 @@ services:
         sync: false
       - key: ADMIN_REPLY_TO
         sync: false
+      - key: INVOICE_PAYMENT_INSTRUCTIONS
+        sync: false
 
 # Notes:
 # - PORT is set automatically by Render — server.js already reads

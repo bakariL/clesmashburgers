@@ -25,7 +25,7 @@ Everything is optional; without env vars, texts/emails are logged to the console
 
 ## Admin dashboard (`/admin`)
 
-One login only: set `ADMIN_USERNAME` and `ADMIN_PASSWORD` in the environment (until both are set, the dashboard is locked). Shows every booking with contact info, event details, items and notes, status, and a log of emails sent; "Email customer" sends from the dashboard (replies go to `ADMIN_REPLY_TO`, default the first notify address). Login is rate-limited (5 wrong tries → 15-minute lockout), sessions last 12 hours.
+One login only: set `ADMIN_USERNAME` and `ADMIN_PASSWORD` in the environment (until both are set, the dashboard is locked). Shows every booking with contact info, event details, items and notes, status, and a log of emails sent; "Email customer" sends from the dashboard (replies go to `ADMIN_REPLY_TO`, default the first notify address). **Invoices:** the dashboard has an Invoices section — "New invoice" (or "Create invoice" on any booking, which pre-fills the lines) lets you edit line items, add a tax rate and due date, then email it to the customer or save a draft. Invoices are numbered INV-0001…, totals are computed on the server, and you can resend, mark paid, or void. Set `INVOICE_PAYMENT_INSTRUCTIONS` to change the payment line at the bottom of the email. No online payment is taken. Login is rate-limited (5 wrong tries → 15-minute lockout), sessions last 12 hours.
 
 ## Optional integrations
 

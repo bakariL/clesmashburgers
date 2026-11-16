@@ -468,6 +468,16 @@ function viewKitchen() {
         <p style="color:var(--steel);">Loading…</p>
       </div>
 
+      <div class="section-head" style="margin-top:56px;" id="invoices">
+        <div>
+          <h2 class="h-display">Invoices</h2>
+          <p>Create an invoice and email it straight to the customer.</p>
+        </div>
+        <button class="btn btn-primary" id="newInvoiceBtn">+ New invoice</button>
+      </div>
+      <div id="invoiceFormWrap"></div>
+      <div id="invoiceList"><p style="color:var(--steel);">Loading…</p></div>
+
       <div class="section-head" style="margin-top:56px;">
         <div>
           <h2 class="h-display">Catering Calendar</h2>
@@ -568,6 +578,7 @@ function renderKitchenBoard(cateringRequests, cloverEnabled) {
             ${CATERING_STATUSES.map(st => `<option value="${st}" ${st === r.status ? 'selected' : ''}>${st.replace(/_/g, ' ')}</option>`).join('')}
           </select>
           <button type="button" class="btn btn-dark btn-sm" data-compose-open="${r.ref}">✉ Email customer</button>
+          <button type="button" class="btn btn-dark btn-sm" data-invoice-from="${r.ref}">🧾 Create invoice</button>
         </div>
         ${state.openCompose === r.ref ? composePanel(r) : ''}
       </div>
@@ -610,10 +621,11 @@ function startKitchenPolling() {
   clearInterval(kitchenPollTimer);
   const load = async () => {
     try {
-      const [cateringRes, cloverRes, calRes] = await Promise.all([
+      const [cateringRes, cloverRes, calRes, invRes] = await Promise.all([
         adminFetch("/api/catering"),
         adminFetch("/api/clover/status"),
         adminFetch("/api/catering/calendar/staff"),
+        adminFetch("/api/admin/invoices"),
       ]);
       if (cateringRes.status === 401 || calRes.status === 401) {
         adminLogout();
@@ -633,6 +645,11 @@ function startKitchenPolling() {
         board.innerHTML = renderKitchenBoard(state.cateringCache, state.cloverEnabled);
         attachKitchenStatusHandlers();
       }
+
+      const invData = await invRes.json().catch(() => ({ invoices: [] }));
+      state.invoiceCache = invData.invoices || [];
+      const invEl = document.getElementById("invoiceList");
+      if (invEl) { invEl.innerHTML = renderInvoiceList(state.invoiceCache); attachInvoiceListHandlers(); }
 
       renderKitchenCalendar(calData.booked || [], calData.blocked || []);
     } catch {
@@ -717,7 +734,211 @@ function rerenderBoard() {
   attachKitchenStatusHandlers();
 }
 
+// ---------------- Invoices (admin) ----------------
+
+function renderInvoiceList(invoices) {
+  if (!invoices.length) return '<p style="color:var(--steel);">No invoices yet.</p>';
+  return invoices.map(inv => `
+    <div class="kitchen-card admin-card">
+      <div class="kitchen-card-head">
+        <strong>${escapeHtml(inv.number)}</strong>
+        <span class="status-badge status-inv-${inv.status}">${escapeHtml(inv.status)}</span>
+        <span style="margin-left:auto; font-weight:700;">${money(inv.total)}</span>
+      </div>
+      <div class="kitchen-card-body">
+        <div class="kv"><span>Customer</span><span>${escapeHtml(inv.customerName)} · <a href="mailto:${escapeHtml(inv.customerEmail)}">${escapeHtml(inv.customerEmail)}</a></span></div>
+        <div class="kv"><span>Issued</span><span>${escapeHtml(inv.issueDate || "")}${inv.dueDate ? ` · due ${escapeHtml(inv.dueDate)}` : ""}</span></div>
+        ${inv.bookingRef ? `<div class="kv"><span>Booking</span><span>${escapeHtml(inv.bookingRef)}</span></div>` : ""}
+        <ul style="margin:8px 0 0; padding-left:18px; font-size:0.9rem;">
+          ${inv.items.map(i => `<li>${escapeHtml(i.qty)}× ${escapeHtml(i.description)} — ${money(i.amount)}</li>`).join("")}
+        </ul>
+        ${inv.taxRate ? `<div class="kv"><span>Tax (${escapeHtml(inv.taxRate)}%)</span><span>${money(inv.tax)}</span></div>` : ""}
+        ${(inv.emails && inv.emails.length) ? `<h4>Emailed</h4>${inv.emails.map(e => `<div class="email-log"><span>${fmtDateTime(e.at)} · ${escapeHtml(e.to)} · ${escapeHtml(e.status)}</span></div>`).join("")}` : ""}
+      </div>
+      <div class="admin-actions">
+        ${inv.status !== "void" ? `<button type="button" class="btn btn-dark btn-sm" data-inv-send="${inv.number}">${inv.sentAt ? "✉ Resend" : "✉ Email invoice"}</button>` : ""}
+        ${(inv.status === "draft" || inv.status === "sent") ? `<button type="button" class="btn btn-dark btn-sm" data-inv-status="${inv.number}:paid">✓ Mark paid</button>` : ""}
+        ${inv.status !== "void" && inv.status !== "paid" ? `<button type="button" class="btn btn-secondary btn-sm" style="color:var(--ink); border-color:var(--steel);" data-inv-status="${inv.number}:void">Void</button>` : ""}
+      </div>
+    </div>`).join("");
+}
+
+function invoiceLineRow(l = {}) {
+  return `
+    <div class="inv-line">
+      <input type="text" class="inv-desc" placeholder="Description" maxlength="200" value="${escapeHtml(l.description || "")}">
+      <input type="number" class="inv-qty" placeholder="Qty" min="0" step="any" inputmode="decimal" value="${l.qty != null ? escapeHtml(l.qty) : 1}">
+      <input type="number" class="inv-price" placeholder="Price" min="0" step="0.01" inputmode="decimal" value="${l.unitPrice != null ? escapeHtml(l.unitPrice) : ""}">
+      <span class="inv-amt">$0.00</span>
+      <button type="button" class="btn btn-secondary btn-sm inv-rm" style="color:var(--ink); border-color:var(--steel);" aria-label="Remove line">✕</button>
+    </div>`;
+}
+
+// Turns a booking into starting invoice lines using the booking's own prices.
+function invoiceLinesFromBooking(r) {
+  const menu = state.cateringMenu || {};
+  const lines = [];
+  for (const i of r.items || []) {
+    lines.push({ description: i.name, qty: i.qty, unitPrice: i.price });
+    if (i.comboQty) lines.push({ description: `${i.name} — combo upgrade`, qty: i.comboQty, unitPrice: (menu.comboUpgrade || {}).price ?? 5 });
+    if (i.friesQty) lines.push({ description: `${i.name} — fries only`, qty: i.friesQty, unitPrice: (menu.friesUpgrade || {}).price ?? 3.5 });
+    if (i.dessertQty) lines.push({ description: `${i.name} — dessert`, qty: i.dessertQty, unitPrice: (menu.dessertAddOn || {}).price ?? 5 });
+  }
+  for (const s of r.sides || []) lines.push({ description: s.name, qty: s.qty, unitPrice: s.price });
+  return lines;
+}
+
+function openInvoiceForm(prefill = {}) {
+  const wrap = document.getElementById("invoiceFormWrap");
+  if (!wrap) return;
+  const bookings = state.cateringCache || [];
+  const lines = prefill.items && prefill.items.length ? prefill.items : [{}];
+  wrap.innerHTML = `
+    <form id="invoiceForm" class="form-card compose-panel" style="max-width:760px; margin-bottom:24px;" novalidate>
+      <h3 class="h-display" style="margin-top:0;">New invoice</h3>
+      <div class="field">
+        <label for="invBooking">Start from a catering booking <span class="hint">(optional)</span></label>
+        <select id="invBooking">
+          <option value="">— none, build from scratch —</option>
+          ${bookings.map(b => `<option value="${escapeHtml(b.ref)}" ${b.ref === prefill.bookingRef ? "selected" : ""}>${escapeHtml(b.ref)} · ${escapeHtml(b.contact.name)} · ${escapeHtml(b.eventDate)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field"><label for="invName">Customer name</label><input type="text" id="invName" maxlength="100" value="${escapeHtml(prefill.customerName || "")}"></div>
+      <div class="field"><label for="invEmail">Customer email</label><input type="email" id="invEmail" autocapitalize="none" value="${escapeHtml(prefill.customerEmail || "")}"></div>
+      <div class="field"><label>Line items</label><div id="invLines">${lines.map(invoiceLineRow).join("")}</div>
+        <button type="button" class="btn btn-dark btn-sm" id="invAddLine" style="margin-top:8px;">+ Add line</button></div>
+      <div class="field" style="max-width:200px;"><label for="invTax">Tax rate % <span class="hint">(optional)</span></label><input type="number" id="invTax" min="0" max="100" step="0.01" inputmode="decimal" placeholder="0" value="${escapeHtml(prefill.taxRate != null ? prefill.taxRate : "")}"></div>
+      <div class="field" style="max-width:200px;"><label for="invDue">Due date <span class="hint">(optional)</span></label><input type="date" id="invDue" min="${todayISODate()}"></div>
+      <div class="field"><label for="invNotes">Notes <span class="hint">(shown on the invoice)</span></label><textarea id="invNotes" rows="3" maxlength="1000">${escapeHtml(prefill.notes || "")}</textarea></div>
+      <div class="confirm-detail-card" style="margin:0 0 16px;">
+        <div class="row"><span>Subtotal</span><span id="invSub">$0.00</span></div>
+        <div class="row"><span>Tax</span><span id="invTaxAmt">$0.00</span></div>
+        <div class="row"><span><strong>Total</strong></span><span id="invTotal"><strong>$0.00</strong></span></div>
+      </div>
+      <div id="invError"></div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button type="submit" class="btn btn-primary" id="invSendBtn" data-send="1">Email invoice</button>
+        <button type="submit" class="btn btn-dark" id="invDraftBtn" data-send="0">Save as draft</button>
+        <button type="button" class="btn btn-secondary" id="invCancel" style="color:var(--ink); border-color:var(--steel);">Cancel</button>
+      </div>
+      <p style="font-size:0.78rem; color:var(--steel); margin:8px 0 0;">Replies go to your operations inbox. Totals are re-calculated on the server.</p>
+    </form>`;
+  wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+  wireInvoiceForm();
+}
+
+function wireInvoiceForm() {
+  const form = document.getElementById("invoiceForm");
+  const readLines = () => [...form.querySelectorAll(".inv-line")].map(row => ({
+    description: row.querySelector(".inv-desc").value.trim(),
+    qty: row.querySelector(".inv-qty").value,
+    unitPrice: row.querySelector(".inv-price").value,
+  }));
+  const recalc = () => {
+    let sub = 0;
+    form.querySelectorAll(".inv-line").forEach(row => {
+      const amt = Math.round((parseFloat(row.querySelector(".inv-qty").value) || 0) * Math.round((parseFloat(row.querySelector(".inv-price").value) || 0) * 100));
+      row.querySelector(".inv-amt").textContent = money(amt / 100);
+      sub += amt;
+    });
+    const rate = parseFloat(document.getElementById("invTax").value) || 0;
+    const tax = Math.round(sub * rate / 100);
+    document.getElementById("invSub").textContent = money(sub / 100);
+    document.getElementById("invTaxAmt").textContent = money(tax / 100);
+    document.getElementById("invTotal").innerHTML = `<strong>${money((sub + tax) / 100)}</strong>`;
+  };
+  const bindRow = (row) => {
+    row.querySelector(".inv-rm").addEventListener("click", () => {
+      if (form.querySelectorAll(".inv-line").length > 1) { row.remove(); recalc(); }
+    });
+  };
+  form.addEventListener("input", recalc);
+  form.querySelectorAll(".inv-line").forEach(bindRow);
+  document.getElementById("invAddLine").addEventListener("click", () => {
+    const holder = document.createElement("div");
+    holder.innerHTML = invoiceLineRow();
+    const row = holder.firstElementChild;
+    document.getElementById("invLines").appendChild(row);
+    bindRow(row);
+    row.querySelector(".inv-desc").focus();
+  });
+  document.getElementById("invCancel").addEventListener("click", () => { document.getElementById("invoiceFormWrap").innerHTML = ""; });
+  document.getElementById("invBooking").addEventListener("change", (e) => {
+    const b = (state.cateringCache || []).find(x => x.ref === e.target.value);
+    if (!b) return;
+    openInvoiceForm({
+      bookingRef: b.ref, customerName: b.contact.name, customerEmail: b.contact.email,
+      items: invoiceLinesFromBooking(b), notes: `Catering: ${b.eventTitle || "event"} on ${b.eventDate}`,
+    });
+  });
+
+  let submitter = null;
+  form.querySelectorAll('button[type="submit"]').forEach(btn => btn.addEventListener("click", () => { submitter = btn; }));
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const send = submitter && submitter.dataset.send === "1";
+    const err = document.getElementById("invError");
+    err.innerHTML = "";
+    const payload = {
+      customerName: document.getElementById("invName").value.trim(),
+      customerEmail: document.getElementById("invEmail").value.trim(),
+      items: readLines().filter(l => l.description || l.unitPrice !== ""),
+      taxRate: document.getElementById("invTax").value,
+      dueDate: document.getElementById("invDue").value,
+      notes: document.getElementById("invNotes").value.trim(),
+      bookingRef: document.getElementById("invBooking").value,
+      send,
+    };
+    const buttons = form.querySelectorAll("button");
+    buttons.forEach(b => { b.disabled = true; });
+    try {
+      const res = await adminFetch("/api/admin/invoices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) { adminLogout(); render(); return; }
+      if (res.status === 400) { err.innerHTML = `<div class="form-error-banner" role="alert">${escapeHtml(data.error || "Check the form.")}</div>`; return; }
+      // 201/502 both mean the invoice was saved
+      document.getElementById("invoiceFormWrap").innerHTML = "";
+      if (res.ok) {
+        showToast(!send ? `${data.invoice.number} saved as a draft` : data.simulated ? `${data.invoice.number} saved — email NOT sent (email isn't configured yet)` : `${data.invoice.number} emailed to ${data.invoice.customerEmail} ✓`);
+      } else {
+        showToast(`${data.invoice.number} saved, but the email failed: ${data.error}`);
+      }
+      if (state.reloadBoard) await state.reloadBoard();
+    } catch {
+      err.innerHTML = `<div class="form-error-banner" role="alert">Couldn't reach the server.</div>`;
+    } finally {
+      buttons.forEach(b => { b.disabled = false; });
+    }
+  });
+  recalc();
+}
+
+function attachInvoiceListHandlers() {
+  document.querySelectorAll("[data-inv-send]").forEach(btn => btn.addEventListener("click", async () => {
+    btn.disabled = true; btn.textContent = "Sending…";
+    try {
+      const res = await adminFetch(`/api/admin/invoices/${encodeURIComponent(btn.dataset.invSend)}/send`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      showToast(res.ok ? (data.simulated ? "Not sent — email isn't configured on the server yet." : "Invoice emailed ✓") : (data.error || "Couldn't send that invoice."));
+    } catch { showToast("Couldn't reach the server."); }
+    if (state.reloadBoard) await state.reloadBoard();
+  }));
+  document.querySelectorAll("[data-inv-status]").forEach(btn => btn.addEventListener("click", async () => {
+    const [number, status] = btn.dataset.invStatus.split(":");
+    if (status === "void" && !confirm(`Void ${number}? This can't be undone.`)) return;
+    await adminFetch(`/api/admin/invoices/${encodeURIComponent(number)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) });
+    showToast(`${number} marked ${status}`);
+    if (state.reloadBoard) await state.reloadBoard();
+  }));
+}
+
 function attachKitchenStatusHandlers() {
+  document.querySelectorAll("[data-invoice-from]").forEach(btn => btn.addEventListener("click", () => {
+    const r = (state.cateringCache || []).find(x => x.ref === btn.dataset.invoiceFrom);
+    if (!r) return;
+    openInvoiceForm({ bookingRef: r.ref, customerName: r.contact.name, customerEmail: r.contact.email, items: invoiceLinesFromBooking(r), notes: `Catering: ${r.eventTitle || "event"} on ${r.eventDate}` });
+  }));
+
   document.querySelectorAll("[data-catering-ref]").forEach(sel => {
     sel.addEventListener("change", async () => {
       await adminFetch(`/api/catering/${sel.dataset.cateringRef}`, {
@@ -947,6 +1168,8 @@ function attachHandlers(route) {
   }
 
   if (route === "kitchen") {
+    const newInvBtn = document.getElementById("newInvoiceBtn");
+    if (newInvBtn) newInvBtn.addEventListener("click", () => openInvoiceForm({}));
     const testBtn = document.getElementById("testEmailBtn");
     if (testBtn) {
       testBtn.addEventListener("click", async () => {

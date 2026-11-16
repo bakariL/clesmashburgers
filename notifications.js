@@ -129,4 +129,43 @@ async function sendCustomerEmail(booking, subject, message) {
   }
 }
 
-module.exports = { sendCustomerEmail, sendCateringConfirmation, sendCateringTeamNotification, cateringRecipients };
+const money2 = (n) => `$${Number(n || 0).toFixed(2)}`;
+
+function longDateStr(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
+  if (!m) return "";
+  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).toLocaleDateString("en-US", { timeZone: "UTC", year: "numeric", month: "long", day: "numeric" });
+}
+
+// Emails an invoice to the customer. Never throws — returns the notify result.
+async function sendInvoiceEmail(inv) {
+  const payInfo = process.env.INVOICE_PAYMENT_INSTRUCTIONS || "To pay, reply to this email or call (216) 971-1884.";
+  const rows = (inv.items || []).map((i) => `<tr>
+    <td style="padding:8px 10px;border-bottom:1px solid #eee">${esc(i.description)}</td>
+    <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right">${esc(i.qty)}</td>
+    <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right">${money2(i.unitPrice)}</td>
+    <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right">${money2(i.amount)}</td></tr>`).join("");
+  const totalRow = (label, val, bold) => `<tr><td colspan="3" style="padding:6px 10px;text-align:right;${bold ? "font-weight:bold;font-size:16px" : ""}">${label}</td><td style="padding:6px 10px;text-align:right;${bold ? "font-weight:bold;font-size:16px" : ""}">${val}</td></tr>`;
+  const html = `<div style="font-family:sans-serif;font-size:15px;line-height:1.5;color:#111;max-width:640px">
+  <h2 style="margin:0 0 2px">Cleveland Smash Burgers</h2>
+  <div style="color:#666;font-size:13px">3915 Carnegie Ave, Cleveland, OH 44115 · (216) 971-1884</div>
+  <h3 style="margin:24px 0 4px">Invoice ${esc(inv.number)}</h3>
+  <div style="color:#444;font-size:14px">Billed to: <strong>${esc(inv.customerName)}</strong> (${esc(inv.customerEmail)})<br>
+  Issued: ${esc(longDateStr(inv.issueDate))}${inv.dueDate ? `<br>Due: <strong>${esc(longDateStr(inv.dueDate))}</strong>` : ""}${inv.bookingRef ? `<br>Catering reference: ${esc(inv.bookingRef)}` : ""}</div>
+  <table style="width:100%;border-collapse:collapse;margin-top:16px;font-size:14px">
+    <thead><tr style="background:#f4f4f4"><th style="padding:8px 10px;text-align:left">Description</th><th style="padding:8px 10px;text-align:right">Qty</th><th style="padding:8px 10px;text-align:right">Price</th><th style="padding:8px 10px;text-align:right">Amount</th></tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot>${totalRow("Subtotal", money2(inv.subtotal))}${inv.taxRate ? totalRow(`Tax (${esc(inv.taxRate)}%)`, money2(inv.tax)) : ""}${totalRow("Total due", money2(inv.total), true)}</tfoot>
+  </table>
+  ${inv.notes ? `<p style="margin-top:16px"><strong>Notes</strong><br>${esc(inv.notes).replace(/\n/g, "<br>")}</p>` : ""}
+  <p style="margin-top:20px">${esc(payInfo)}</p>
+  <p style="color:#666;font-size:13px">Thank you for choosing Cleveland Smash Burgers!</p></div>`;
+  const replyTo = process.env.ADMIN_REPLY_TO || cateringRecipients()[0];
+  try {
+    return await notify.sendEmail(inv.customerEmail, `Invoice ${inv.number} from Cleveland Smash Burgers — ${money2(inv.total)}`, html, { replyTo });
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+module.exports = { sendInvoiceEmail, sendCustomerEmail, sendCateringConfirmation, sendCateringTeamNotification, cateringRecipients };

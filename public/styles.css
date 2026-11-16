@@ -768,3 +768,17 @@ footer {
 .pay-note { margin:12px 0 0; font-size:0.85rem; color:#5c5c5c; text-align:center; line-height:1.45; }
 
 .pkg-desc { margin: 4px 0 10px; font-size: 0.9rem; color: #5c5c5c; line-height: 1.4; }
+
+/* ---------- Admin invoices ---------- */
+.status-badge.status-inv-draft { background: #e2e2e2; color: #2b2b2b; }
+.status-badge.status-inv-sent { background: var(--char); color: #fff; }
+.status-badge.status-inv-paid { background: var(--pickle, #2e7d32); color: #fff; }
+.status-badge.status-inv-void { background: #f0f0f0; color: #8a8a8a; text-decoration: line-through; }
+.inv-line { display: grid; grid-template-columns: 1fr 70px 90px 80px 36px; gap: 6px; align-items: center; margin-bottom: 6px; }
+.inv-line input { min-width: 0; }
+.inv-amt { text-align: right; font-size: 0.9rem; }
+@media (max-width: 600px) {
+  .inv-line { grid-template-columns: 1fr 60px 80px; }
+  .inv-line .inv-amt { grid-column: 1 / 3; text-align: left; }
+  .inv-line .inv-rm { justify-self: end; }
+}

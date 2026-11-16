@@ -156,6 +156,66 @@ function clientIp(req) {
   return String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
 }
 
+// Validates an invoice from the admin form and computes every amount on
+// the server (never trust totals from the browser). Money is rounded to cents.
+const INVOICE_STATUSES = ["draft", "sent", "paid", "void"];
+function buildInvoice(body) {
+  body = body || {};
+  const customerName = String(body.customerName || "").trim().slice(0, 100);
+  if (!customerName) return { error: "Enter the customer's name." };
+  const customerEmail = String(body.customerEmail || "").trim();
+  if (customerEmail.length > 254 || !EMAIL_RE.test(customerEmail)) return { error: "Enter a valid customer email address." };
+  if (!Array.isArray(body.items) || body.items.length === 0) return { error: "Add at least one line item." };
+  if (body.items.length > 50) return { error: "An invoice can have at most 50 line items." };
+  const cents = (n) => Math.round(Number(n) * 100);
+  const items = [];
+  let subtotalC = 0;
+  for (const raw of body.items) {
+    const description = String(raw.description || "").trim().slice(0, 200);
+    const qty = Number(raw.qty);
+    const unit = Number(raw.unitPrice);
+    if (!description) return { error: "Every line item needs a description." };
+    if (!Number.isFinite(qty) || qty <= 0 || qty > 100000) return { error: `Quantity for "${description}" must be more than 0.` };
+    if (!Number.isFinite(unit) || unit < 0 || unit > 1000000) return { error: `Price for "${description}" must be $0 or more.` };
+    const amountC = Math.round(qty * cents(unit));
+    subtotalC += amountC;
+    items.push({ description, qty, unitPrice: cents(unit) / 100, amount: amountC / 100 });
+  }
+  const taxRate = body.taxRate === "" || body.taxRate == null ? 0 : Number(body.taxRate);
+  if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 100) return { error: "Tax rate must be between 0 and 100." };
+  const taxC = Math.round(subtotalC * taxRate / 100);
+  const dueDate = String(body.dueDate || "").trim();
+  if (dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return { error: "Due date is not valid." };
+  const issueDate = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+  if (dueDate && dueDate < issueDate) return { error: "Due date can't be in the past." };
+  return {
+    invoice: {
+      customerName, customerEmail, items,
+      subtotal: subtotalC / 100, taxRate, tax: taxC / 100, total: (subtotalC + taxC) / 100,
+      issueDate, dueDate,
+      notes: String(body.notes || "").trim().slice(0, 1000),
+      bookingRef: String(body.bookingRef || "").trim().slice(0, 40),
+      status: "draft", emails: [],
+    },
+  };
+}
+
+// Emails an invoice and records the attempt on it. Marks it "sent" only on
+// a real send (not when email isn't configured, and not on a failure).
+async function emailInvoice(number) {
+  const inv = await db.getInvoice(number);
+  if (!inv) return { error: "Invoice not found.", status: 404 };
+  if (inv.status === "void") return { error: "That invoice is void.", status: 400 };
+  const result = await notifications.sendInvoiceEmail(inv);
+  const at = new Date().toISOString();
+  const state = result.error ? `failed: ${result.error}` : result.simulated ? "not sent (email not configured)" : "sent";
+  const updated = await db.updateInvoice(number, (i) => ({
+    emails: [...(i.emails || []), { at, to: i.customerEmail, status: state }],
+    ...(state === "sent" ? { sentAt: at, status: i.status === "paid" ? "paid" : "sent" } : {}),
+  }));
+  return { invoice: updated, simulated: Boolean(result.simulated), error: result.error || null };
+}
+
 // Validates the customer's catering selection against CATERING_MENU and
 // prices it on the server (never trust prices from the browser). Returns
 // { error } or { items, subtotal, sandwichCount }.
@@ -476,6 +536,38 @@ const server = http.createServer(async (req, res) => {
     const booking = await db.getCateringRequest(ref);
     if (!booking) return sendJSON(res, 404, { error: "Booking not found." });
     return sendJSON(res, 200, { request: booking });
+  }
+
+  // ---- Invoices (admin only) ----
+  if (parts[0] === "api" && parts[1] === "admin" && parts[2] === "invoices") {
+    if (!kitchenAuthorized(req)) return sendJSON(res, 401, { error: "Unauthorized." });
+
+    if (parts.length === 3 && req.method === "GET") {
+      return sendJSON(res, 200, { invoices: await db.getInvoices() });
+    }
+    if (parts.length === 3 && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const built = buildInvoice(body);
+      if (built.error) return sendJSON(res, 400, { error: built.error });
+      let invoice = await db.createInvoice(built.invoice);
+      if (!body.send) return sendJSON(res, 201, { invoice, simulated: false });
+      const out = await emailInvoice(invoice.number);
+      return sendJSON(res, out.error ? 502 : 201, { invoice: out.invoice || invoice, simulated: out.simulated, error: out.error });
+    }
+    const number = parts[3] ? decodeURIComponent(parts[3]) : "";
+    if (parts.length === 5 && parts[4] === "send" && req.method === "POST") {
+      const out = await emailInvoice(number);
+      if (out.status) return sendJSON(res, out.status, { error: out.error });
+      return sendJSON(res, out.error ? 502 : 200, { invoice: out.invoice, simulated: out.simulated, error: out.error });
+    }
+    if (parts.length === 4 && req.method === "PATCH") {
+      const body = await readBody(req).catch(() => ({}));
+      if (!INVOICE_STATUSES.includes(body.status)) return sendJSON(res, 400, { error: `Status must be one of: ${INVOICE_STATUSES.join(", ")}` });
+      const updated = await db.updateInvoice(number, { status: body.status, ...(body.status === "paid" ? { paidAt: new Date().toISOString() } : {}) });
+      if (!updated) return sendJSON(res, 404, { error: "Invoice not found." });
+      return sendJSON(res, 200, { invoice: updated });
+    }
+    return sendJSON(res, 404, { error: "Not found." });
   }
 
   // ---- Catering: update status (kitchen) ----
